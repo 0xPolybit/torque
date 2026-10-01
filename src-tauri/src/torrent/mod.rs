@@ -1,3 +1,3 @@
 mod service;
 
-pub use service::{DownloadDirectory, TorrentService, TorrentStatus};
+pub use service::{DownloadDirectory, TorrentFileSelection, TorrentService, TorrentStatus};

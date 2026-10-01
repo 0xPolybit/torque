@@ -10,6 +10,12 @@ export interface AppInfo {
 export interface DownloadDirectory {
   id: string;
   name: string;
+  displayPath: string;
+}
+
+export interface TorrentFileSelection {
+  id: string;
+  fileName: string;
 }
 
 export interface DownloadDirectoryList {
@@ -75,10 +81,19 @@ export function addTorrentUrl(
   return invoke<TorrentStatus>("add_torrent_url", { torrentUrl, outputDirectoryId });
 }
 
+export function selectTorrentFile(): Promise<TorrentFileSelection | null> {
+  return invoke<TorrentFileSelection | null>("select_torrent_file");
+}
+
 export function addTorrentFile(
+  torrentFileId: string,
   outputDirectoryId: string,
-): Promise<TorrentStatus | null> {
-  return invoke<TorrentStatus | null>("add_torrent_file", { outputDirectoryId });
+): Promise<TorrentStatus> {
+  return invoke<TorrentStatus>("add_torrent_file", { torrentFileId, outputDirectoryId });
+}
+
+export function discardTorrentFileSelection(torrentFileId: string): Promise<void> {
+  return invoke<void>("discard_torrent_file_selection", { torrentFileId });
 }
 
 export function describeError(error: unknown): string {

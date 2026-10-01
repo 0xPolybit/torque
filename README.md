@@ -17,7 +17,7 @@ Torque is a cross-platform desktop torrent downloader built with Tauri 2. It acc
 src/
   app/                    App shell, desktop connection, and transfer queue hooks
   components/             Sidebar and backend status
-  features/transfers/     Queue filters, transfer rows, empty states, settings, and add dialog
+  features/transfers/     Queue filters, transfer rows, empty states, settings, add dialog, and input validation
   lib/                    Typed wrappers for Tauri commands and transfer DTOs
   main.tsx                React entry point
   styles.css              Theme tokens and desktop layout
@@ -73,12 +73,15 @@ The frontend runs at `http://127.0.0.1:1420`. Tauri commands are available only 
 
 ## Torrent inputs and download folders
 
-- **Magnet link:** paste a `magnet:?` link. Torque validates it with rqbit before adding it to the session.
-- **Local torrent file:** choose a `.torrent` file from the native file picker. Torque checks the extension, size, and metainfo before starting it.
-- **HTTP/HTTPS torrent URL:** enter an `http://` or `https://` address. Other URL schemes and credential-bearing URLs are rejected.
-- **Output folder:** use the system Downloads folder by default, or choose another folder with the native folder picker. The app revalidates the selected folder when adding a torrent.
+- Select **Add torrent** and choose Magnet link, Torrent file, or Torrent URL in the dialog. Each method is validated before the final action; the Rust service validates inputs again before passing them to rqbit.
+- **Magnet link:** paste a `magnet:?` URI with a supported BitTorrent info hash. Torque checks the URI shape and hash before asking rqbit to add it.
+- **Local torrent file:** choose a `.torrent` file from the native file picker. Torque checks the extension, size, and metainfo and shows the selected filename. The file is staged without starting a transfer; **Start Download** submits its opaque, single-use selection ID to Rust.
+- **HTTP/HTTPS torrent URL:** enter an `http://` or `https://` address. Malformed URLs, other schemes, and credential-bearing URLs are rejected with an inline message.
+- **Output folder:** Torque uses the system Downloads folder by default. **Change folder** opens the native directory picker, and the dialog displays the selected folder path. **Start Download** passes only a directory ID to Rust, which verifies the ID and path before use.
 
-The frontend receives opaque download-folder IDs and display names. It does not receive a filesystem API or submit arbitrary local paths. Torrent-file access stays in the Rust command layer after an explicit native picker selection.
+The frontend does not receive filesystem APIs or submit arbitrary local paths. Rust retains the paths granted by the native pickers and returns opaque IDs plus display-only folder information. The most recently selected folder ID is remembered in webview session storage; on startup Torque uses it only if it is still present in the backend's current set of folder grants, otherwise the default folder is selected. Paths and torrent-file selections are not persisted in browser storage.
+
+After a successful submission the dialog closes and the new torrent appears immediately in the queue, then the queue refreshes from rqbit. Failed submissions remain in the dialog so the user can correct the source, choose another folder, or retry; the error is shown instead of being discarded.
 
 ## Torrent engine architecture
 

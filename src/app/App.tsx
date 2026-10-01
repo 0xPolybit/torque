@@ -93,14 +93,14 @@ export default function App() {
 
       {showAddTorrent && (
         <AddTorrentDialog
-          directories={queue.directories}
-          selectedDirectoryId={queue.selectedDirectoryId}
-          selectedDirectoryName={queue.selectedDirectory?.name}
+          selectedDirectory={queue.selectedDirectory}
           error={queue.error}
           busy={queue.busy}
+          selectingFile={queue.selectingFile}
           onClose={() => setShowAddTorrent(false)}
           onSelectDirectory={queue.chooseDirectory}
-          onSelectedDirectoryChange={queue.setSelectedDirectoryId}
+          onChooseTorrentFile={queue.chooseTorrentFile}
+          onDiscardTorrentFile={queue.discardTorrentFile}
           onAddMagnet={queue.addMagnet}
           onAddUrl={queue.addTorrentUrl}
           onAddFile={queue.addTorrentFile}

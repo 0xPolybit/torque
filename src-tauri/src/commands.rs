@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
-use crate::torrent::{DownloadDirectory, TorrentService, TorrentStatus};
+use crate::torrent::{DownloadDirectory, TorrentFileSelection, TorrentService, TorrentStatus};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -80,11 +80,10 @@ pub async fn add_magnet(
 }
 
 #[tauri::command]
-pub async fn add_torrent_file(
+pub async fn select_torrent_file(
     app: AppHandle,
     service: State<'_, TorrentService>,
-    output_directory_id: String,
-) -> Result<Option<TorrentStatus>, String> {
+) -> Result<Option<TorrentFileSelection>, String> {
     let Some(selected) = app
         .dialog()
         .file()
@@ -97,9 +96,30 @@ pub async fn add_torrent_file(
         .into_path()
         .map_err(|error| format!("Could not access the selected torrent file: {error}"))?;
     service
-        .add_torrent_file(&path, &output_directory_id)
-        .await
+        .register_torrent_file(path)
         .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn add_torrent_file(
+    service: State<'_, TorrentService>,
+    torrent_file_id: String,
+    output_directory_id: String,
+) -> Result<TorrentStatus, String> {
+    service
+        .add_selected_torrent_file(&torrent_file_id, &output_directory_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn discard_torrent_file_selection(
+    service: State<'_, TorrentService>,
+    torrent_file_id: String,
+) -> Result<(), String> {
+    service
+        .discard_torrent_file_selection(&torrent_file_id)
         .map_err(|error| error.to_string())
 }
 

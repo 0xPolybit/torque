@@ -1,32 +1,33 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { FileUp, Folder, Link2, Magnet, Plus, X } from "lucide-react";
-import type { DownloadDirectory } from "../../lib/desktop";
+import type { DownloadDirectory, TorrentFileSelection } from "../../lib/desktop";
+import { validateMagnetUri, validateTorrentUrl } from "./torrentInput";
 
 type InputKind = "magnet" | "url" | "file";
 
 interface AddTorrentDialogProps {
-  directories: DownloadDirectory[];
-  selectedDirectoryId: string;
-  selectedDirectoryName?: string;
+  selectedDirectory?: DownloadDirectory;
   error: string;
   busy: boolean;
+  selectingFile: boolean;
   onClose: () => void;
   onSelectDirectory: () => Promise<void>;
-  onSelectedDirectoryChange: (id: string) => void;
+  onChooseTorrentFile: () => Promise<TorrentFileSelection | null>;
+  onDiscardTorrentFile: (id: string) => Promise<void>;
   onAddMagnet: (link: string) => Promise<boolean>;
   onAddUrl: (url: string) => Promise<boolean>;
-  onAddFile: () => Promise<boolean>;
+  onAddFile: (selectionId: string) => Promise<boolean>;
 }
 
 export function AddTorrentDialog({
-  directories,
-  selectedDirectoryId,
-  selectedDirectoryName,
+  selectedDirectory,
   error,
   busy,
+  selectingFile,
   onClose,
   onSelectDirectory,
-  onSelectedDirectoryChange,
+  onChooseTorrentFile,
+  onDiscardTorrentFile,
   onAddMagnet,
   onAddUrl,
   onAddFile,
@@ -35,6 +36,9 @@ export function AddTorrentDialog({
   const [kind, setKind] = useState<InputKind>("magnet");
   const [magnetLink, setMagnetLink] = useState("");
   const [torrentUrl, setTorrentUrl] = useState("");
+  const [fileSelection, setFileSelection] = useState<TorrentFileSelection | null>(null);
+  const [validationError, setValidationError] = useState("");
+  const [directoryError, setDirectoryError] = useState("");
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -45,12 +49,69 @@ export function AddTorrentDialog({
     };
   }, []);
 
+  const locked = busy || selectingFile;
+
+  async function close() {
+    if (locked) return;
+    if (fileSelection) {
+      await onDiscardTorrentFile(fileSelection.id);
+      setFileSelection(null);
+    }
+    onClose();
+  }
+
+  async function chooseFile() {
+    setValidationError("");
+    const next = await onChooseTorrentFile();
+    if (!next) return;
+    if (fileSelection) await onDiscardTorrentFile(fileSelection.id);
+    setFileSelection(next);
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const added = kind === "magnet"
-      ? await onAddMagnet(magnetLink)
-      : await onAddUrl(torrentUrl);
-    if (added) onClose();
+    if (locked) return;
+    setValidationError("");
+    setDirectoryError("");
+    if (!selectedDirectory?.id) {
+      setDirectoryError("Choose a destination folder before starting the download.");
+      return;
+    }
+
+    if (kind === "magnet") {
+      const message = validateMagnetUri(magnetLink);
+      if (message) {
+        setValidationError(message);
+        return;
+      }
+      if (await onAddMagnet(magnetLink.trim())) onClose();
+      return;
+    }
+
+    if (kind === "url") {
+      const message = validateTorrentUrl(torrentUrl);
+      if (message) {
+        setValidationError(message);
+        return;
+      }
+      if (await onAddUrl(torrentUrl.trim())) onClose();
+      return;
+    }
+
+    if (!fileSelection) {
+      setValidationError("Choose a .torrent file to continue.");
+      return;
+    }
+    if (await onAddFile(fileSelection.id)) {
+      setFileSelection(null);
+      onClose();
+    }
+  }
+
+  function changeKind(next: InputKind) {
+    setKind(next);
+    setValidationError("");
+    setDirectoryError("");
   }
 
   return (
@@ -60,136 +121,116 @@ export function AddTorrentDialog({
       aria-labelledby="add-dialog-title"
       onCancel={(event) => {
         event.preventDefault();
-        onClose();
+        void close();
       }}
       onClick={(event) => {
-        if (event.target === dialogRef.current) onClose();
+        if (event.target === dialogRef.current) void close();
       }}
     >
-      <div className="add-dialog__header">
-        <div>
-          <h2 id="add-dialog-title">Add a torrent</h2>
-          <p>Start a transfer from a magnet link or torrent file.</p>
-        </div>
-        <button className="icon-button" type="button" onClick={onClose} aria-label="Close">
-          <X size={17} aria-hidden="true" />
-        </button>
-      </div>
-
-      <div className="add-dialog__tabs" role="tablist" aria-label="Torrent source">
-        <button
-          className={kind === "magnet" ? "is-selected" : ""}
-          role="tab"
-          aria-selected={kind === "magnet"}
-          type="button"
-          onClick={() => setKind("magnet")}
-        >
-          <Magnet size={15} aria-hidden="true" /> Magnet
-        </button>
-        <button
-          className={kind === "url" ? "is-selected" : ""}
-          role="tab"
-          aria-selected={kind === "url"}
-          type="button"
-          onClick={() => setKind("url")}
-        >
-          <Link2 size={15} aria-hidden="true" /> URL
-        </button>
-        <button
-          className={kind === "file" ? "is-selected" : ""}
-          role="tab"
-          aria-selected={kind === "file"}
-          type="button"
-          onClick={() => setKind("file")}
-        >
-          <FileUp size={15} aria-hidden="true" /> File
-        </button>
-      </div>
-
-      {kind === "file" ? (
-        <div className="add-dialog__file-prompt">
-          <div className="add-dialog__file-icon" aria-hidden="true">
-            <FileUp size={21} strokeWidth={1.7} />
+      <form className="add-dialog__content" onSubmit={(event) => void submit(event)} noValidate>
+        <div className="add-dialog__header">
+          <div>
+            <h2 id="add-dialog-title">Add a torrent</h2>
+            <p>Choose a source and where you’d like to save it.</p>
           </div>
-          <p>Choose a .torrent file from your computer.</p>
-          <button
-            className="primary-button"
-            type="button"
-            disabled={busy || !selectedDirectoryId}
-            onClick={() => void onAddFile().then((added) => added && onClose())}
-          >
-            {busy ? "Adding torrent…" : "Choose .torrent file"}
+          <button className="icon-button" type="button" onClick={() => void close()} aria-label="Close" disabled={locked}>
+            <X size={17} aria-hidden="true" />
           </button>
         </div>
-      ) : (
-        <form className="add-dialog__form" onSubmit={submit}>
-          <label className="field-label" htmlFor="torrent-input">
-            {kind === "magnet" ? "Magnet link" : "Torrent URL"}
-          </label>
-          {kind === "magnet" ? (
-            <textarea
-              id="torrent-input"
-              autoFocus
-              required
-              rows={3}
-              placeholder="magnet:?xt=urn:btih:…"
-              value={magnetLink}
-              onChange={(event) => setMagnetLink(event.target.value)}
-            />
-          ) : (
-            <input
-              id="torrent-input"
-              autoFocus
-              required
-              type="url"
-              placeholder="https://example.com/file.torrent"
-              value={torrentUrl}
-              onChange={(event) => setTorrentUrl(event.target.value)}
-            />
+
+        <div className="add-dialog__tabs" role="tablist" aria-label="Torrent source">
+          <button className={kind === "magnet" ? "is-selected" : ""} role="tab" aria-selected={kind === "magnet"} type="button" disabled={locked} onClick={() => changeKind("magnet")}>
+            <Magnet size={15} aria-hidden="true" /> Magnet link
+          </button>
+          <button className={kind === "file" ? "is-selected" : ""} role="tab" aria-selected={kind === "file"} type="button" disabled={locked} onClick={() => changeKind("file")}>
+            <FileUp size={15} aria-hidden="true" /> Torrent file
+          </button>
+          <button className={kind === "url" ? "is-selected" : ""} role="tab" aria-selected={kind === "url"} type="button" disabled={locked} onClick={() => changeKind("url")}>
+            <Link2 size={15} aria-hidden="true" /> Torrent URL
+          </button>
+        </div>
+
+        <section className="add-dialog__source" aria-label={`${kind} source`}>
+          {kind === "magnet" && (
+            <>
+              <label className="field-label" htmlFor="torrent-magnet">Magnet link</label>
+              <textarea
+                id="torrent-magnet"
+                autoFocus
+                rows={3}
+                spellCheck={false}
+                placeholder="magnet:?xt=urn:btih:…"
+                value={magnetLink}
+                aria-invalid={Boolean(validationError)}
+                aria-describedby={validationError ? "torrent-input-error" : undefined}
+                disabled={locked}
+                onChange={(event) => { setMagnetLink(event.target.value); setValidationError(""); }}
+              />
+              <p className="add-dialog__hint">Paste a magnet URI with a BitTorrent info hash.</p>
+            </>
           )}
-          <button
-            className="primary-button add-dialog__submit"
-            type="submit"
-            disabled={busy || !selectedDirectoryId}
-          >
-            <Plus size={15} aria-hidden="true" />
-            {busy ? "Starting download…" : "Add torrent"}
+
+          {kind === "url" && (
+            <>
+              <label className="field-label" htmlFor="torrent-url">Torrent URL</label>
+              <input
+                id="torrent-url"
+                autoFocus
+                type="url"
+                spellCheck={false}
+                placeholder="https://example.com/file.torrent"
+                value={torrentUrl}
+                aria-invalid={Boolean(validationError)}
+                aria-describedby={validationError ? "torrent-input-error" : undefined}
+                disabled={locked}
+                onChange={(event) => { setTorrentUrl(event.target.value); setValidationError(""); }}
+              />
+              <p className="add-dialog__hint">Use an HTTP or HTTPS link to a .torrent file.</p>
+            </>
+          )}
+
+          {kind === "file" && (
+            <div className={`add-dialog__file-select${fileSelection ? " has-file" : ""}`}>
+              <div className="add-dialog__file-icon" aria-hidden="true"><FileUp size={20} strokeWidth={1.7} /></div>
+              <div className="add-dialog__file-info">
+                <strong>{fileSelection?.fileName ?? "Select a torrent file"}</strong>
+                <span>{fileSelection ? "File checked and ready to add" : "Choose a .torrent file from your computer"}</span>
+              </div>
+              <button className="secondary-button" type="button" disabled={locked} onClick={() => void chooseFile()}>
+                {selectingFile ? "Opening…" : fileSelection ? "Choose another" : "Choose file"}
+              </button>
+            </div>
+          )}
+        </section>
+
+        {validationError && <p id="torrent-input-error" className="add-dialog__field-error" role="alert">{validationError}</p>}
+        {error && <p className="add-dialog__error" role="alert">{error}</p>}
+
+        <div className={`add-dialog__destination${directoryError ? " has-error" : ""}`}>
+          <div className="add-dialog__destination-icon" aria-hidden="true"><Folder size={15} /></div>
+          <div className="add-dialog__destination-content">
+            <label>Download location</label>
+            <span className="add-dialog__destination-path" title={selectedDirectory?.displayPath}>
+              {selectedDirectory?.displayPath ?? "Choose a destination folder"}
+            </span>
+          </div>
+          <button className="text-button" type="button" disabled={locked} onClick={() => { setDirectoryError(""); void onSelectDirectory(); }}>
+            Change folder
           </button>
-        </form>
-      )}
-
-      <div className="add-dialog__destination">
-        <div className="add-dialog__destination-icon" aria-hidden="true">
-          <Folder size={15} />
         </div>
-        <div className="add-dialog__destination-content">
-          <label htmlFor="download-directory">Save to</label>
-          <select
-            id="download-directory"
-            value={selectedDirectoryId}
-            disabled={directories.length === 0}
-            onChange={(event) => onSelectedDirectoryChange(event.target.value)}
-          >
-            {directories.map((directory) => (
-              <option key={directory.id} value={directory.id}>{directory.name}</option>
-            ))}
-            {directories.length === 0 && <option value="">No folder selected</option>}
-          </select>
-          <span>{selectedDirectoryName || "Choose a download folder"}</span>
-        </div>
-        <button className="text-button" type="button" onClick={() => void onSelectDirectory()}>
-          Browse…
-        </button>
-      </div>
+        {directoryError && <p className="add-dialog__field-error add-dialog__directory-error" role="alert">{directoryError}</p>}
 
-      {error && (
-        <p className="add-dialog__error" role="alert">
-          {error}
-        </p>
-      )}
-      <p className="add-dialog__legal-note">
-        Only download content you have permission to access.
-      </p>
+        <div className="add-dialog__footer">
+          <p className="add-dialog__legal-note">Only download content you have permission to access.</p>
+          <div className="add-dialog__footer-actions">
+            <button className="secondary-button" type="button" onClick={() => void close()} disabled={locked}>Cancel</button>
+            <button className="primary-button" type="submit" disabled={locked}>
+              <Plus size={15} aria-hidden="true" />
+              {busy ? "Starting download…" : selectingFile ? "Opening file picker…" : "Start Download"}
+            </button>
+          </div>
+        </div>
+      </form>
     </dialog>
   );
 }

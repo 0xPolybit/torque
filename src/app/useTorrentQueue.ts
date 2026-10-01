@@ -3,13 +3,34 @@ import {
   addMagnet,
   addTorrentFile,
   addTorrentUrl,
+  discardTorrentFileSelection,
   describeError,
   getDownloadDirectories,
   getTorrents,
   selectDownloadDirectory,
+  selectTorrentFile as selectNativeTorrentFile,
   type DownloadDirectory,
+  type TorrentFileSelection,
   type TorrentStatus,
 } from "../lib/desktop";
+
+const LAST_DOWNLOAD_DIRECTORY_KEY = "torque:last-download-directory-id";
+
+function rememberedDirectoryId(): string {
+  try {
+    return window.sessionStorage.getItem(LAST_DOWNLOAD_DIRECTORY_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function rememberDirectoryId(id: string): void {
+  try {
+    window.sessionStorage.setItem(LAST_DOWNLOAD_DIRECTORY_KEY, id);
+  } catch {
+    // The opaque grant remains selected in React state for this app session.
+  }
+}
 
 export function useTorrentQueue(enabled: boolean) {
   const [torrents, setTorrents] = useState<TorrentStatus[]>([]);
@@ -17,6 +38,11 @@ export function useTorrentQueue(enabled: boolean) {
   const [selectedDirectoryId, setSelectedDirectoryId] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [selectingFile, setSelectingFile] = useState(false);
+
+  useEffect(() => {
+    if (selectedDirectoryId) rememberDirectoryId(selectedDirectoryId);
+  }, [selectedDirectoryId]);
 
   const refreshTorrents = useCallback(async () => {
     try {
@@ -35,7 +61,11 @@ export function useTorrentQueue(enabled: boolean) {
       .then(({ directories: available, defaultId }) => {
         if (!active) return;
         setDirectories(available);
-        setSelectedDirectoryId((selected) => selected || defaultId);
+        const remembered = available.find((directory) => directory.id === rememberedDirectoryId());
+        setSelectedDirectoryId((current) => {
+          if (available.some((directory) => directory.id === current)) return current;
+          return remembered?.id ?? defaultId;
+        });
       })
       .catch((cause: unknown) => {
         if (active) setError(describeError(cause));
@@ -60,6 +90,27 @@ export function useTorrentQueue(enabled: boolean) {
         directory,
       ]);
       setSelectedDirectoryId(directory.id);
+    } catch (cause) {
+      setError(describeError(cause));
+    }
+  }, []);
+
+  const chooseTorrentFile = useCallback(async (): Promise<TorrentFileSelection | null> => {
+    setError("");
+    setSelectingFile(true);
+    try {
+      return await selectNativeTorrentFile();
+    } catch (cause) {
+      setError(describeError(cause));
+      return null;
+    } finally {
+      setSelectingFile(false);
+    }
+  }, []);
+
+  const discardTorrentFile = useCallback(async (id: string) => {
+    try {
+      await discardTorrentFileSelection(id);
     } catch (cause) {
       setError(describeError(cause));
     }
@@ -97,18 +148,20 @@ export function useTorrentQueue(enabled: boolean) {
     torrents,
     directories,
     selectedDirectoryId,
-    setSelectedDirectoryId,
     selectedDirectory: directories.find((item) => item.id === selectedDirectoryId),
     error,
     setError,
     busy,
+    selectingFile,
     refreshTorrents,
     chooseDirectory,
+    chooseTorrentFile,
+    discardTorrentFile,
     addMagnet: (link: string) =>
       add(() => addMagnet(link, selectedDirectoryId)),
     addTorrentUrl: (url: string) =>
       add(() => addTorrentUrl(url, selectedDirectoryId)),
-    addTorrentFile: () =>
-      add(() => addTorrentFile(selectedDirectoryId)),
+    addTorrentFile: (torrentFileId: string) =>
+      add(() => addTorrentFile(torrentFileId, selectedDirectoryId)),
   };
 }

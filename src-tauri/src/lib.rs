@@ -25,6 +25,8 @@ pub fn run() {
             commands::get_app_info,
             commands::get_download_directories,
             commands::select_download_directory,
+            commands::select_torrent_file,
+            commands::discard_torrent_file_selection,
             commands::add_magnet,
             commands::add_torrent_file,
             commands::add_torrent_url,

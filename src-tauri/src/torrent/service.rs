@@ -43,6 +43,10 @@ pub enum TorrentError {
     Status(String),
     #[error("The download service could not lock its directory list.")]
     DirectoryLock,
+    #[error("The download service could not lock its selected torrent files.")]
+    TorrentFileSelectionLock,
+    #[error("The selected torrent file is no longer available. Choose it again.")]
+    UnknownTorrentFileSelection,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -50,6 +54,14 @@ pub enum TorrentError {
 pub struct DownloadDirectory {
     pub id: String,
     pub name: String,
+    pub display_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TorrentFileSelection {
+    pub id: String,
+    pub file_name: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -83,6 +95,7 @@ pub struct TorrentStatus {
 pub struct TorrentService {
     api: Api,
     directories: Mutex<HashMap<String, PathBuf>>,
+    torrent_file_selections: Mutex<HashMap<String, PathBuf>>,
     default_directory_id: String,
 }
 
@@ -117,6 +130,7 @@ impl TorrentService {
         let service = Self {
             api,
             directories: Mutex::new(HashMap::new()),
+            torrent_file_selections: Mutex::new(HashMap::new()),
             default_directory_id: Uuid::new_v4().to_string(),
         };
 
@@ -141,6 +155,7 @@ impl TorrentService {
             .map(|(id, path)| DownloadDirectory {
                 id: id.clone(),
                 name: directory_name(path),
+                display_path: display_path(path),
             })
             .collect();
         entries.sort_by_key(|entry| entry.id != self.default_directory_id);
@@ -157,12 +172,69 @@ impl TorrentService {
         let directory = DownloadDirectory {
             id: Uuid::new_v4().to_string(),
             name: directory_name(&path),
+            display_path: display_path(&path),
         };
         self.directories
             .lock()
             .map_err(|_| TorrentError::DirectoryLock)?
             .insert(directory.id.clone(), path);
         Ok(directory)
+    }
+
+    /// Retains a validated torrent file behind an opaque, single-use frontend ID.
+    /// The native picker is the only source of paths accepted by this method.
+    pub fn register_torrent_file(
+        &self,
+        torrent_path: PathBuf,
+    ) -> Result<TorrentFileSelection, TorrentError> {
+        let torrent_path = fs::canonicalize(&torrent_path)
+            .map_err(|error| TorrentError::ReadTorrentFile(error.to_string()))?;
+        read_torrent_file(&torrent_path)?;
+        let file_name = torrent_path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .ok_or(TorrentError::InvalidTorrentFile)?;
+        let selection = TorrentFileSelection {
+            id: Uuid::new_v4().to_string(),
+            file_name,
+        };
+        self.torrent_file_selections
+            .lock()
+            .map_err(|_| TorrentError::TorrentFileSelectionLock)?
+            .insert(selection.id.clone(), torrent_path);
+        Ok(selection)
+    }
+
+    pub async fn add_selected_torrent_file(
+        &self,
+        selection_id: &str,
+        directory_id: &str,
+    ) -> Result<TorrentStatus, TorrentError> {
+        let torrent_path = self
+            .torrent_file_selections
+            .lock()
+            .map_err(|_| TorrentError::TorrentFileSelectionLock)?
+            .remove(selection_id)
+            .ok_or(TorrentError::UnknownTorrentFileSelection)?;
+
+        match self.add_torrent_file(&torrent_path, directory_id).await {
+            Ok(status) => Ok(status),
+            Err(error) => {
+                self.torrent_file_selections
+                    .lock()
+                    .map_err(|_| TorrentError::TorrentFileSelectionLock)?
+                    .insert(selection_id.to_string(), torrent_path);
+                Err(error)
+            }
+        }
+    }
+
+    pub fn discard_torrent_file_selection(&self, selection_id: &str) -> Result<(), TorrentError> {
+        self.torrent_file_selections
+            .lock()
+            .map_err(|_| TorrentError::TorrentFileSelectionLock)?
+            .remove(selection_id);
+        Ok(())
     }
 
     pub fn default_directory_id(&self) -> &str {
@@ -229,26 +301,7 @@ impl TorrentService {
         torrent_path: &Path,
         directory_id: &str,
     ) -> Result<TorrentStatus, TorrentError> {
-        if !torrent_path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("torrent"))
-        {
-            return Err(TorrentError::InvalidTorrentFile);
-        }
-
-        let metadata = fs::metadata(torrent_path)
-            .map_err(|error| TorrentError::ReadTorrentFile(error.to_string()))?;
-        if !metadata.is_file() {
-            return Err(TorrentError::InvalidTorrentFile);
-        }
-        if metadata.len() > MAX_TORRENT_FILE_SIZE {
-            return Err(TorrentError::TorrentFileTooLarge);
-        }
-        let bytes = fs::read(torrent_path)
-            .map_err(|error| TorrentError::ReadTorrentFile(error.to_string()))?;
-        librqbit::torrent_from_bytes(&bytes)
-            .map_err(|error| TorrentError::InvalidTorrentMetadata(error.to_string()))?;
+        let bytes = read_torrent_file(torrent_path)?;
 
         let output_directory = self.validate_output_directory(directory_id)?;
         let response = self
@@ -315,6 +368,34 @@ fn directory_name(path: &Path) -> String {
         .filter(|name| !name.is_empty())
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| path.display().to_string())
+}
+
+fn display_path(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+fn read_torrent_file(torrent_path: &Path) -> Result<Vec<u8>, TorrentError> {
+    if !torrent_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("torrent"))
+    {
+        return Err(TorrentError::InvalidTorrentFile);
+    }
+
+    let metadata = fs::metadata(torrent_path)
+        .map_err(|error| TorrentError::ReadTorrentFile(error.to_string()))?;
+    if !metadata.is_file() {
+        return Err(TorrentError::InvalidTorrentFile);
+    }
+    if metadata.len() > MAX_TORRENT_FILE_SIZE {
+        return Err(TorrentError::TorrentFileTooLarge);
+    }
+    let bytes =
+        fs::read(torrent_path).map_err(|error| TorrentError::ReadTorrentFile(error.to_string()))?;
+    librqbit::torrent_from_bytes(&bytes)
+        .map_err(|error| TorrentError::InvalidTorrentMetadata(error.to_string()))?;
+    Ok(bytes)
 }
 
 fn validate_torrent_url(input: &str) -> Result<Url, TorrentError> {
@@ -453,6 +534,18 @@ mod tests {
     }
 
     #[test]
+    fn rejects_an_invalid_torrent_file_before_registering_it() {
+        let temp = tempfile::tempdir().expect("temporary test directory");
+        let path = temp.path().join("invalid.torrent");
+        fs::write(&path, b"not a torrent").expect("write invalid torrent data");
+
+        assert!(matches!(
+            read_torrent_file(&path),
+            Err(TorrentError::InvalidTorrentMetadata(_))
+        ));
+    }
+
+    #[test]
     fn add_options_use_the_selected_output_directory() {
         let options = add_options(Path::new("C:/downloads/selected"));
         assert_eq!(
@@ -488,13 +581,24 @@ mod tests {
         let torrent_file = temp.path().join("sample.torrent");
         fs::write(&torrent_file, ONE_BYTE_TORRENT).expect("write torrent metadata");
 
+        let file_selection = service
+            .register_torrent_file(torrent_file)
+            .expect("stage the selected file without starting it");
+        assert_eq!(file_selection.file_name, "sample.torrent");
+
         let added = service
-            .add_torrent_file(&torrent_file, &selected.id)
+            .add_selected_torrent_file(&file_selection.id, &selected.id)
             .await
-            .expect("add the selected local torrent");
+            .expect("start the selected local torrent");
 
         assert_eq!(added.output_directory, "selected");
         assert_eq!(added.total_bytes, 1);
+        assert!(matches!(
+            service
+                .add_selected_torrent_file(&file_selection.id, &selected.id)
+                .await,
+            Err(TorrentError::UnknownTorrentFileSelection)
+        ));
         service.api.session().stop().await;
     }
 
