@@ -1,10 +1,14 @@
-import { useState } from "react";
-import { Plus } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Plus, Settings2 } from "lucide-react";
 import { Sidebar } from "../components/Sidebar";
 import { BackendStatus } from "../components/BackendStatus";
 import { AddTorrentDialog } from "../features/transfers/AddTorrentDialog";
+import { EmptyFilter } from "../features/transfers/EmptyFilter";
 import { EmptyQueue } from "../features/transfers/EmptyQueue";
+import { SettingsDialog } from "../features/transfers/SettingsDialog";
+import { TorrentFilters } from "../features/transfers/TorrentFilters";
 import { TorrentList } from "../features/transfers/TorrentList";
+import { filterTorrents, type TorrentFilter } from "../features/transfers/torrentPresentation";
 import { useDesktopConnection } from "./useDesktopConnection";
 import { useTorrentQueue } from "./useTorrentQueue";
 
@@ -13,6 +17,18 @@ export default function App() {
   const isConnected = connection.state === "connected";
   const queue = useTorrentQueue(isConnected);
   const [showAddTorrent, setShowAddTorrent] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [filter, setFilter] = useState<TorrentFilter>("all");
+  const visibleTorrents = useMemo(
+    () => filterTorrents(queue.torrents, filter),
+    [queue.torrents, filter],
+  );
+  const activeCount = queue.torrents.filter((torrent) =>
+    torrent.state === "initializing" || torrent.state === "downloading",
+  ).length;
+  const completedCount = queue.torrents.filter((torrent) =>
+    torrent.state === "seeding" || torrent.progressPercent >= 100,
+  ).length;
 
   return (
     <div className="app-shell">
@@ -21,11 +37,11 @@ export default function App() {
       <main className="workspace">
         <header className="workspace__header">
           <div>
-            <h1>All torrents</h1>
+            <h1>Downloads</h1>
             <p>
               {queue.torrents.length === 0
-                ? "Your local transfer queue"
-                : `${queue.torrents.length} ${queue.torrents.length === 1 ? "transfer" : "transfers"}`}
+                ? "Your local transfer library"
+                : `${activeCount} active · ${completedCount} completed`}
             </p>
           </div>
           <div className="workspace__actions">
@@ -39,10 +55,19 @@ export default function App() {
               <Plus size={15} strokeWidth={2} aria-hidden="true" />
               <span>Add torrent</span>
             </button>
+            <button
+              className="icon-button workspace__settings"
+              type="button"
+              onClick={() => setShowSettings(true)}
+              aria-label="Open settings"
+              title="Settings"
+            >
+              <Settings2 size={17} strokeWidth={1.8} aria-hidden="true" />
+            </button>
           </div>
         </header>
 
-        {queue.error && !showAddTorrent && (
+        {queue.error && !showAddTorrent && !showSettings && (
           <div className="queue-error" role="alert">{queue.error}</div>
         )}
 
@@ -52,7 +77,17 @@ export default function App() {
             disabled={!isConnected || !queue.selectedDirectoryId}
           />
         ) : (
-          <TorrentList torrents={queue.torrents} />
+          <div className="workspace__library">
+            <div className="workspace__queue-toolbar">
+              <TorrentFilters torrents={queue.torrents} value={filter} onChange={setFilter} />
+              <span className="workspace__visible-count">
+                {visibleTorrents.length} {visibleTorrents.length === 1 ? "download" : "downloads"}
+              </span>
+            </div>
+            {visibleTorrents.length > 0
+              ? <TorrentList torrents={visibleTorrents} />
+              : <EmptyFilter filter={filter} />}
+          </div>
         )}
       </main>
 
@@ -69,6 +104,16 @@ export default function App() {
           onAddMagnet={queue.addMagnet}
           onAddUrl={queue.addTorrentUrl}
           onAddFile={queue.addTorrentFile}
+        />
+      )}
+
+      {showSettings && (
+        <SettingsDialog
+          appInfo={connection.state === "connected" ? connection.info : null}
+          downloadDirectoryName={queue.selectedDirectory?.name}
+          error={queue.error}
+          onChooseDirectory={queue.chooseDirectory}
+          onClose={() => setShowSettings(false)}
         />
       )}
     </div>

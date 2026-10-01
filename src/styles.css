@@ -217,7 +217,7 @@ button:focus-visible,
   min-width: 0;
   min-height: 0;
   flex-direction: column;
-  gap: 22px;
+  gap: 19px;
   padding: 29px 30px 30px;
 }
 
@@ -232,7 +232,7 @@ button:focus-visible,
 .workspace__actions {
   display: flex;
   align-items: center;
-  gap: 11px;
+  gap: 8px;
 }
 
 .workspace__header h1 {
@@ -248,6 +248,30 @@ button:focus-visible,
   margin: 4px 0 0;
   color: var(--color-muted);
   font-size: 12px;
+}
+
+.workspace__library {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.workspace__queue-toolbar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.workspace__visible-count {
+  flex: 0 0 auto;
+  color: var(--color-subtle);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 .backend-status {
@@ -359,6 +383,19 @@ button:focus-visible,
   opacity: 0.48;
 }
 
+.workspace__settings {
+  width: 36px;
+  height: 36px;
+  border-color: var(--color-border);
+  color: var(--color-muted);
+}
+
+.workspace__settings:hover {
+  border-color: #46534a;
+  background: #1a211c;
+  color: var(--color-text);
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -398,75 +435,88 @@ button:focus-visible,
 .torrent-list {
   height: 100%;
   overflow: auto;
-  padding: 2px 22px;
+  padding: 3px 19px;
 }
 
-.torrent-item {
-  padding: 19px 0 17px;
+.torrent-row {
+  padding: 15px 5px 14px;
   border-bottom: 1px solid var(--color-border-soft);
+  transition: background-color 140ms ease;
 }
 
-.torrent-item:last-child {
+.torrent-row:hover {
+  background: rgb(255 255 255 / 1.5%);
+}
+
+.torrent-row:last-child {
   border-bottom: 0;
 }
 
-.torrent-item__topline,
-.torrent-item__identity,
-.torrent-item__metrics {
+.torrent-row__header,
+.torrent-row__identity,
+.torrent-row__destination,
+.torrent-row__progress-meta,
+.torrent-row__eta,
+.torrent-row__stat {
   display: flex;
   align-items: center;
 }
 
-.torrent-item__topline {
+.torrent-row__header {
   justify-content: space-between;
-  gap: 16px;
+  gap: 18px;
 }
 
-.torrent-item__identity {
+.torrent-row__identity {
   min-width: 0;
-  gap: 11px;
+  gap: 10px;
 }
 
-.torrent-item__icon,
+.torrent-row__icon,
 .add-dialog__file-icon {
   display: grid;
   flex: 0 0 auto;
   place-items: center;
-  border: 1px solid #334139;
+  border: 1px solid #303c33;
   border-radius: 9px;
-  background: #19221c;
-  color: #b4d894;
+  background: #171e19;
+  color: #afcf91;
 }
 
-.torrent-item__icon {
-  width: 34px;
-  height: 34px;
+.torrent-row__icon {
+  width: 33px;
+  height: 33px;
 }
 
-.torrent-item__title-group {
+.torrent-row__title-group {
   min-width: 0;
 }
 
-.torrent-item__title-group h2 {
+.torrent-row__title-group h2 {
   overflow: hidden;
   margin: 0;
   color: var(--color-text);
   font-size: 13px;
-  font-weight: 610;
+  font-weight: 620;
+  letter-spacing: -0.012em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.torrent-item__hash {
-  display: block;
-  max-width: 58ch;
+.torrent-row__destination {
+  max-width: 48ch;
   overflow: hidden;
-  margin-top: 3px;
+  gap: 5px;
+  margin-top: 4px;
   color: var(--color-subtle);
   font-size: 10px;
-  font-variant-numeric: tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.torrent-row__destination svg {
+  flex: 0 0 auto;
+  color: #91a294;
 }
 
 .torrent-state {
@@ -474,12 +524,14 @@ button:focus-visible,
   flex: 0 0 auto;
   align-items: center;
   gap: 7px;
-  padding: 4px 8px;
+  padding: 5px 9px;
   border: 1px solid var(--color-border-soft);
   border-radius: 99px;
   color: var(--color-muted);
   font-size: 10px;
+  font-weight: 560;
   line-height: 1;
+  white-space: nowrap;
 }
 
 .torrent-state__dot {
@@ -489,9 +541,33 @@ button:focus-visible,
   background: #8a988f;
 }
 
-.torrent-state--downloading .torrent-state__dot,
-.torrent-state--seeding .torrent-state__dot {
+.torrent-state--downloading {
+  border-color: #384735;
+  color: #c9dabd;
+}
+
+.torrent-state--downloading .torrent-state__dot {
   background: var(--color-accent);
+}
+
+.torrent-state--queued,
+.torrent-state--paused {
+  border-color: #443d2e;
+  color: #d7c6a3;
+}
+
+.torrent-state--queued .torrent-state__dot,
+.torrent-state--paused .torrent-state__dot {
+  background: #c8a96e;
+}
+
+.torrent-state--completed {
+  border-color: #304438;
+  color: #b4d2bc;
+}
+
+.torrent-state--completed .torrent-state__dot {
+  background: #82b493;
 }
 
 .torrent-state--error {
@@ -503,16 +579,58 @@ button:focus-visible,
   background: var(--color-danger);
 }
 
-.torrent-item__error {
-  margin: 10px 0 0 45px;
+.torrent-row__error {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+  margin: 10px 0 0 43px;
   color: #f0b3ad;
   font-size: 11px;
+  text-overflow: ellipsis;
+}
+
+.torrent-row__error svg {
+  flex: 0 0 auto;
+}
+
+.torrent-row__progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  margin: 13px 1px 6px 43px;
+  color: #d1d9d2;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.torrent-row__amount {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.torrent-row__amount > span {
+  color: var(--color-subtle);
+}
+
+.torrent-row__progress-meta {
+  flex: 0 0 auto;
+  gap: 12px;
+  color: #dfe7df;
+}
+
+.torrent-row__eta {
+  gap: 4px;
+  color: var(--color-muted);
 }
 
 .torrent-progress {
-  height: 4px;
+  height: 5px;
   overflow: hidden;
-  margin: 13px 0 10px 45px;
+  margin: 0 1px 10px 43px;
   border-radius: 99px;
   background: #252e29;
 }
@@ -525,44 +643,62 @@ button:focus-visible,
   background: var(--color-accent);
   transform: scaleX(0);
   transform-origin: left center;
-  transition: transform 500ms ease-out;
+  transition: transform 420ms cubic-bezier(0.2, 0.75, 0.25, 1);
 }
 
-.torrent-item__metrics {
-  flex-wrap: wrap;
-  gap: 8px 17px;
-  margin-left: 45px;
+.torrent-row--queued .torrent-progress span,
+.torrent-row--paused .torrent-progress span {
+  background: #c8a96e;
+}
+
+.torrent-row--completed .torrent-progress span {
+  background: #82b493;
+}
+
+.torrent-row--error .torrent-progress span {
+  background: var(--color-danger);
+}
+
+.torrent-row__stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-left: 43px;
   color: var(--color-muted);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
 }
 
-.torrent-item__metrics > span:not(.torrent-item__downloaded) {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
+.torrent-row__stat {
+  min-width: 0;
+  gap: 6px;
+  white-space: nowrap;
 }
 
-.torrent-item__metrics svg {
-  color: #8f9d93;
+.torrent-row__stat svg {
+  flex: 0 0 auto;
+  color: #87958a;
 }
 
-.torrent-item__downloaded {
-  color: #d2d9d3;
-}
-
-.torrent-item__folder {
-  margin-left: auto;
+.torrent-row__stat-label {
   color: var(--color-subtle);
 }
 
-.torrent-item__details {
-  margin: 13px 0 0 45px;
+.torrent-row__stat strong {
+  overflow: hidden;
+  color: #cbd4cd;
+  font-size: 10px;
+  font-weight: 560;
+  text-overflow: ellipsis;
+}
+
+.torrent-row__files {
+  margin: 11px 0 0 43px;
   color: var(--color-muted);
   font-size: 10px;
 }
 
-.torrent-item__details summary {
+.torrent-row__files summary {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -571,15 +707,15 @@ button:focus-visible,
   list-style: none;
 }
 
-.torrent-item__details summary::-webkit-details-marker {
+.torrent-row__files summary::-webkit-details-marker {
   display: none;
 }
 
-.torrent-item__details[open] summary svg {
+.torrent-row__files[open] summary svg {
   transform: rotate(180deg);
 }
 
-.torrent-item__details ul {
+.torrent-row__files ul {
   display: grid;
   gap: 6px;
   max-height: 150px;
@@ -589,17 +725,95 @@ button:focus-visible,
   list-style: none;
 }
 
-.torrent-item__details li {
+.torrent-row__files li {
   display: flex;
   justify-content: space-between;
   gap: 16px;
   padding: 3px 0;
 }
 
-.torrent-item__details li span:first-child {
+.torrent-row__files li span:first-child {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.torrent-filters {
+  display: flex;
+  min-width: 0;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.torrent-filters::-webkit-scrollbar {
+  display: none;
+}
+
+.torrent-filter {
+  display: inline-flex;
+  min-height: 32px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+
+.torrent-filter:hover:not(.is-selected) {
+  background: #171d19;
+  color: var(--color-text);
+}
+
+.torrent-filter.is-selected {
+  border-color: #2c3830;
+  background: #1a211c;
+  color: #e0e9e1;
+}
+
+.torrent-filter__count {
+  color: var(--color-subtle);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.torrent-filter.is-selected .torrent-filter__count {
+  color: #c3d2c4;
+}
+
+.queue-panel--empty-filter {
+  align-content: center;
+  justify-items: center;
+  padding: 28px;
+  text-align: center;
+}
+
+.empty-filter__icon {
+  display: grid;
+  width: 39px;
+  height: 39px;
+  place-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: 11px;
+  color: #a8b8ac;
+}
+
+.queue-panel--empty-filter h2 {
+  margin: 15px 0 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.queue-panel--empty-filter p {
+  margin: 5px 0 0;
+  color: var(--color-muted);
+  font-size: 11px;
 }
 
 .add-dialog {
@@ -872,60 +1086,173 @@ button:focus-visible,
   font-size: 9px;
 }
 
+.settings-dialog {
+  width: min(470px, calc(100vw - 40px));
+  max-width: none;
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+  padding: 22px;
+  border: 1px solid #334039;
+  border-radius: 15px;
+  background: #141a16;
+  color: var(--color-text);
+}
+
+.settings-dialog::backdrop {
+  background: rgb(4 7 5 / 74%);
+}
+
+.settings-dialog__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 15px;
+}
+
+.settings-dialog__header h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 620;
+  letter-spacing: -0.025em;
+}
+
+.settings-dialog__header p {
+  margin: 5px 0 0;
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
+.settings-section {
+  margin-top: 22px;
+}
+
+.settings-section h3 {
+  margin: 0 0 9px;
+  color: var(--color-subtle);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+}
+
+.settings-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 0;
+  border-top: 1px solid var(--color-border-soft);
+}
+
+.settings-row__icon {
+  display: grid;
+  width: 33px;
+  height: 33px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid #303a33;
+  border-radius: 9px;
+  color: #aab9ad;
+}
+
+.settings-row__copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 3px;
+}
+
+.settings-row__copy strong {
+  color: #dbe3dc;
+  font-size: 11px;
+  font-weight: 580;
+}
+
+.settings-row__copy span {
+  overflow: hidden;
+  color: var(--color-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-row__ready {
+  flex: 0 0 auto;
+  color: var(--color-accent);
+}
+
+.settings-row__offline {
+  flex: 0 0 auto;
+  color: var(--color-subtle);
+}
+
+.settings-section__note {
+  margin: 2px 0 0 44px;
+  color: var(--color-subtle);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.settings-dialog__error {
+  margin: 10px 0 0 44px;
+  color: #f0b3ad;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
 .empty-queue {
   display: flex;
-  width: min(420px, calc(100% - 40px));
+  width: min(430px, calc(100% - 40px));
   flex-direction: column;
   align-items: center;
-  padding: 38px 0;
+  padding: 34px 0;
   text-align: center;
 }
 
-.empty-queue__signal {
-  display: flex;
-  height: 40px;
-  align-items: center;
-  justify-content: center;
-  color: #9fc879;
+.empty-queue__illustration {
+  position: relative;
+  display: grid;
+  width: 55px;
+  height: 55px;
+  place-items: center;
+  border: 1px solid #334036;
+  border-radius: 15px;
+  background: #18201a;
+  color: #b7d995;
 }
 
-.empty-queue__signal-node {
-  width: 5px;
-  height: 5px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: #91b86e;
-}
-
-.empty-queue__signal-node--end {
+.empty-queue__orbit {
+  position: absolute;
+  top: 26px;
   width: 4px;
   height: 4px;
-  background: #6b7f6e;
+  border-radius: 50%;
+  background: #83a36d;
 }
 
-.empty-queue__signal-line {
-  width: 30px;
-  height: 1px;
-  background: #3b5240;
+.empty-queue__orbit--left {
+  left: -12px;
 }
 
-.empty-queue__signal-line--short {
-  width: 23px;
-  background: #33463a;
+.empty-queue__orbit--right {
+  right: -12px;
+  width: 3px;
+  height: 3px;
+  background: #718771;
 }
 
 .empty-queue h2 {
-  margin: 28px 0 0;
+  margin: 21px 0 0;
   color: var(--color-text);
-  font-size: clamp(27px, 3vw, 34px);
-  font-weight: 590;
-  letter-spacing: -0.035em;
+  font-size: 23px;
+  font-weight: 620;
+  letter-spacing: -0.028em;
   line-height: 1.2;
 }
 
 .empty-queue__description {
   max-width: 38ch;
-  margin: 11px 0 0;
+  margin: 8px 0 0;
   color: var(--color-muted);
   font-size: 13px;
   line-height: 1.7;
@@ -937,7 +1264,7 @@ button:focus-visible,
   align-items: center;
   justify-content: center;
   gap: 8px;
-  margin-top: 25px;
+  margin-top: 19px;
   padding: 0 13px;
   border: 1px solid #819b6c;
   border-radius: var(--radius-control);
@@ -974,13 +1301,24 @@ button:focus-visible,
   }
 
   .workspace__header {
-    align-items: flex-start;
+    align-items: center;
   }
 
   .workspace__actions {
-    align-items: flex-end;
-    flex-direction: column-reverse;
-    gap: 8px;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .workspace__header h1 {
+    font-size: 19px;
+  }
+
+  .backend-status {
+    padding: 0 8px;
+  }
+
+  .torrent-row__stats {
+    gap: 7px;
   }
 
   .torrent-list {
@@ -988,8 +1326,11 @@ button:focus-visible,
     padding-left: 16px;
   }
 
-  .torrent-item__folder {
-    margin-left: 0;
+  .torrent-row__progress-head,
+  .torrent-progress,
+  .torrent-row__stats,
+  .torrent-row__files {
+    margin-left: 42px;
   }
 }
 

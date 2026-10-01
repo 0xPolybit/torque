@@ -82,13 +82,17 @@ export function addTorrentFile(
 }
 
 export function describeError(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) {
-    return error.message;
+  const message = error instanceof Error
+    ? error.message.trim()
+    : typeof error === "string"
+      ? error.trim()
+      : "";
+
+  if (/Cannot read properties of undefined.*invoke|__TAURI_INTERNALS__/i.test(message)) {
+    return "Open Torque in the desktop app to connect to the download engine.";
   }
 
-  if (typeof error === "string" && error.trim()) {
-    return error;
-  }
+  if (message) return message;
 
   return "The desktop core could not be reached.";
 }

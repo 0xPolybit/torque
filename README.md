@@ -17,7 +17,7 @@ Torque is a cross-platform desktop torrent downloader built with Tauri 2. It acc
 src/
   app/                    App shell, desktop connection, and transfer queue hooks
   components/             Sidebar and backend status
-  features/transfers/     Empty state, transfer list, and add-torrent dialog
+  features/transfers/     Queue filters, transfer rows, empty states, settings, and add dialog
   lib/                    Typed wrappers for Tauri commands and transfer DTOs
   main.tsx                React entry point
   styles.css              Theme tokens and desktop layout
@@ -85,6 +85,8 @@ The frontend receives opaque download-folder IDs and display names. It does not 
 `TorrentService` in `src-tauri/src/torrent/service.rs` owns a long-lived rqbit `Session` and its serializable `Api` facade. Tauri creates the service once at startup, enables rqbit fast resume and JSON session persistence under the app-data directory, then manages it as application state. Each add operation passes its validated output folder through rqbit's per-torrent `AddTorrentOptions`.
 
 `src-tauri/src/commands.rs` contains thin commands for folder selection, adding each input type, listing torrents, and retrieving one torrent's status. The service returns app-owned DTOs with the metadata name, info hash, file list, state, progress, downloaded and total bytes, transfer rates, connected peers when rqbit reports them, and a display-only output-folder name. The React queue polls the list and invokes status through the typed bridge in `src/lib/desktop.ts`.
+
+The frontend keeps polling and add-operation state in `src/app/useTorrentQueue.ts`. `TorrentFilters` derives All, Downloading, Queued, Completed, Paused, and Errors views from live rqbit status. Shared presentation helpers format byte and speed values and calculate ETA only when a download rate is available. `TorrentRow` renders progress, the expanded file list, status, peers, and transfer rates. The settings dialog uses the existing native folder picker and notes that its selected location applies for the current session.
 
 rqbit also exposes pause, resume, removal, and file-selection operations through its session/API. These stay behind the Rust service boundary for future controls; the current interface focuses on adding and monitoring transfers.
 
