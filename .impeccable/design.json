@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-01T18:52:56Z",
+  "title": "Design System: Torque",
+  "extensions": {
+    "colorMeta": {
+      "window": { "role": "neutral", "displayName": "Deep Evergreen Window", "canonical": "#0d100f", "tonalRamp": ["oklch(15% 0.005 173.7)", "oklch(25% 0.005 173.7)", "oklch(35% 0.005 173.7)", "oklch(45% 0.005 173.7)", "oklch(55% 0.005 173.7)", "oklch(65% 0.005 173.7)", "oklch(75% 0.005 173.7)", "oklch(95% 0.005 173.7)"] },
+      "rail": { "role": "neutral", "displayName": "Evergreen Rail", "canonical": "#101412", "tonalRamp": ["oklch(15% 0.007 164.1)", "oklch(25% 0.007 164.1)", "oklch(35% 0.007 164.1)", "oklch(45% 0.007 164.1)", "oklch(55% 0.007 164.1)", "oklch(65% 0.007 164.1)", "oklch(75% 0.007 164.1)", "oklch(95% 0.007 164.1)"] },
+      "panel": { "role": "neutral", "displayName": "Quiet Evergreen Panel", "canonical": "#111614", "tonalRamp": ["oklch(15% 0.009 169.3)", "oklch(25% 0.009 169.3)", "oklch(35% 0.009 169.3)", "oklch(45% 0.009 169.3)", "oklch(55% 0.009 169.3)", "oklch(65% 0.009 169.3)", "oklch(75% 0.009 169.3)", "oklch(95% 0.009 169.3)"] },
+      "border": { "role": "neutral", "displayName": "Soft Graphite Border", "canonical": "#252d29", "tonalRamp": ["oklch(15% 0.013 163.9)", "oklch(25% 0.013 163.9)", "oklch(35% 0.013 163.9)", "oklch(45% 0.013 163.9)", "oklch(55% 0.013 163.9)", "oklch(65% 0.013 163.9)", "oklch(75% 0.013 163.9)", "oklch(95% 0.013 163.9)"] },
+      "border-soft": { "role": "neutral", "displayName": "Low Contrast Divider", "canonical": "#1c2420", "tonalRamp": ["oklch(15% 0.014 163.6)", "oklch(25% 0.014 163.6)", "oklch(35% 0.014 163.6)", "oklch(45% 0.014 163.6)", "oklch(55% 0.014 163.6)", "oklch(65% 0.014 163.6)", "oklch(75% 0.014 163.6)", "oklch(95% 0.014 163.6)"] },
+      "text": { "role": "neutral", "displayName": "Warm Mist Text", "canonical": "#e6ece8", "tonalRamp": ["oklch(15% 0.008 157.1)", "oklch(25% 0.008 157.1)", "oklch(35% 0.008 157.1)", "oklch(45% 0.008 157.1)", "oklch(55% 0.008 157.1)", "oklch(65% 0.008 157.1)", "oklch(75% 0.008 157.1)", "oklch(95% 0.008 157.1)"] },
+      "muted": { "role": "neutral", "displayName": "Muted Sage Text", "canonical": "#a2ada6", "tonalRamp": ["oklch(15% 0.016 158.1)", "oklch(25% 0.016 158.1)", "oklch(35% 0.016 158.1)", "oklch(45% 0.016 158.1)", "oklch(55% 0.016 158.1)", "oklch(65% 0.016 158.1)", "oklch(75% 0.016 158.1)", "oklch(95% 0.016 158.1)"] },
+      "subtle": { "role": "neutral", "displayName": "Subtle Sage Text", "canonical": "#829088", "tonalRamp": ["oklch(15% 0.020 160.8)", "oklch(25% 0.020 160.8)", "oklch(35% 0.020 160.8)", "oklch(45% 0.020 160.8)", "oklch(55% 0.020 160.8)", "oklch(65% 0.020 160.8)", "oklch(75% 0.020 160.8)", "oklch(95% 0.020 160.8)"] },
+      "accent": { "role": "primary", "displayName": "Soft Lime", "canonical": "#b7e98b", "tonalRamp": ["oklch(15% 0.133 131.5)", "oklch(25% 0.133 131.5)", "oklch(35% 0.133 131.5)", "oklch(45% 0.133 131.5)", "oklch(55% 0.133 131.5)", "oklch(65% 0.133 131.5)", "oklch(75% 0.133 131.5)", "oklch(95% 0.133 131.5)"] },
+      "accent-ink": { "role": "neutral", "displayName": "Deep Green Ink", "canonical": "#12200d", "tonalRamp": ["oklch(15% 0.040 137.9)", "oklch(25% 0.040 137.9)", "oklch(35% 0.040 137.9)", "oklch(45% 0.040 137.9)", "oklch(55% 0.040 137.9)", "oklch(65% 0.040 137.9)", "oklch(75% 0.040 137.9)", "oklch(95% 0.040 137.9)"] },
+      "danger": { "role": "secondary", "displayName": "Warm Error Coral", "canonical": "#ed928a", "tonalRamp": ["oklch(15% 0.112 25.5)", "oklch(25% 0.112 25.5)", "oklch(35% 0.112 25.5)", "oklch(45% 0.112 25.5)", "oklch(55% 0.112 25.5)", "oklch(65% 0.112 25.5)", "oklch(75% 0.112 25.5)", "oklch(95% 0.112 25.5)"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Centered heading in the transfer empty state." },
+      "headline": { "displayName": "Headline", "purpose": "Workspace title." },
+      "title": { "displayName": "Title", "purpose": "Product name in the sidebar." },
+      "body": { "displayName": "Body", "purpose": "Descriptions and standard interface copy." },
+      "label": { "displayName": "Label", "purpose": "Sidebar section labels and compact metadata." },
+      "action": { "displayName": "Action", "purpose": "Compact button text." }
+    },
+    "shadows": [],
+    "motion": [
+      { "name": "connection-pulse", "value": "2.4s cubic-bezier(0, 0.55, 0.45, 1) infinite", "purpose": "Subtle halo around the connected desktop-core status dot." },
+      { "name": "reduced-motion", "value": "prefers-reduced-motion: reduce; animation-duration: 0.01ms; animation-iteration-count: 1", "purpose": "Effectively disables interface animation when reduced motion is preferred." }
+    ],
+    "breakpoints": [
+      { "name": "compact-desktop-rail", "value": "1040px", "purpose": "Narrows the sidebar and workspace padding on smaller desktop windows." },
+      { "name": "minimum-native-window", "value": "900 × 620px", "purpose": "Tauri window minimum size; the interface remains desktop-oriented." }
+    ]
+  },
+  "components": [
+    {
+      "name": "Disabled Add Torrent Button",
+      "kind": "button",
+      "refersTo": "button-primary-disabled",
+      "description": "Disabled queue action while torrent download support is not implemented.",
+      "html": "<div class=\"ds-action-group\"><button class=\"ds-add-button\" type=\"button\" disabled aria-describedby=\"ds-add-note\"><span aria-hidden=\"true\">+</span><span>Add torrent</span></button><span class=\"ds-action-note\" id=\"ds-add-note\">Not available in this initial version</span></div>",
+      "css": ".ds-action-group { display: flex; flex-direction: column; align-items: center; gap: 9px; } .ds-add-button { display: inline-flex; min-height: 38px; align-items: center; justify-content: center; gap: 8px; padding: 0 13px; border: 1px solid #819b6c; border-radius: 9px; background: var(--color-accent); color: var(--color-accent-ink); font: 650 12px/1.5 'Inter Variable', Inter, sans-serif; cursor: pointer; } .ds-add-button:disabled { border-color: #627553; background: #78925f; color: #10190d; cursor: not-allowed; opacity: 0.64; } .ds-action-note { color: var(--color-subtle); font: 400 11px/1.5 'Inter Variable', Inter, sans-serif; }"
+    },
+    {
+      "name": "Retry Connection Button",
+      "kind": "button",
+      "refersTo": "button-icon-retry",
+      "description": "Small retry action shown only when desktop-core connection fails.",
+      "html": "<button class=\"ds-retry\" type=\"button\" aria-label=\"Retry desktop connection\" title=\"Retry connection\"><svg aria-hidden=\"true\" viewBox=\"0 0 24 24\"><path d=\"M20 11a8 8 0 0 0-14.8-3L4 10\"/><path d=\"M4 5v5h5\"/><path d=\"M4 13a8 8 0 0 0 14.8 3L20 14\"/><path d=\"M20 19v-5h-5\"/></svg></button>",
+      "css": ".ds-retry { display: grid; width: 23px; height: 23px; place-items: center; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #f0b3ad; cursor: pointer; } .ds-retry:hover { background: #412a28; } .ds-retry:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; } .ds-retry svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }"
+    },
+    {
+      "name": "Queue Panel",
+      "kind": "card",
+      "refersTo": "card-queue",
+      "description": "Large flexible container for the local transfer queue.",
+      "html": "<section class=\"ds-queue-panel\" aria-label=\"Transfer queue\"><span>Queue content</span></section>",
+      "css": ".ds-queue-panel { display: grid; min-height: 280px; place-items: center; padding: 24px; border: 1px solid var(--color-border); border-radius: 15px; background: var(--color-panel); color: var(--color-subtle); font: 400 13px/1.5 'Inter Variable', Inter, sans-serif; }"
+    },
+    {
+      "name": "Current Library Item",
+      "kind": "nav",
+      "refersTo": "nav-current",
+      "description": "Inert current-item styling for the initial single-view library rail.",
+      "html": "<div class=\"ds-current-nav\" aria-current=\"page\"><svg aria-hidden=\"true\" viewBox=\"0 0 24 24\"><path d=\"M4 6h16M4 12h16M4 18h16\" /></svg><span>All torrents</span><span class=\"ds-count\" aria-label=\"0 torrents\">0</span></div>",
+      "css": ".ds-current-nav { display: flex; min-height: 39px; align-items: center; gap: 11px; padding: 0 10px; border: 1px solid #2b362f; border-radius: 9px; background: #19201b; color: #e5eee6; font: 560 13px/1.5 'Inter Variable', Inter, sans-serif; } .ds-current-nav svg { width: 17px; height: 17px; flex: 0 0 auto; fill: none; stroke: var(--color-accent); stroke-width: 1.8; stroke-linecap: round; } .ds-count { margin-left: auto; color: #b3beb6; font: 400 11px/1.5 'Inter Variable', Inter, sans-serif; font-variant-numeric: tabular-nums; }"
+    },
+    {
+      "name": "Desktop Core Status",
+      "kind": "chip",
+      "description": "Compact backend connection indicator with ready and error state styling.",
+      "html": "<div class=\"ds-status ds-status--ready\" role=\"status\" aria-live=\"polite\"><span class=\"ds-status-dot\" aria-hidden=\"true\"></span><span class=\"ds-status-label\">Desktop core connected</span></div>",
+      "css": ".ds-status { display: inline-flex; min-height: 31px; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid var(--color-border-soft); border-radius: 99px; color: var(--color-muted); font: 400 11px/1.5 'Inter Variable', Inter, sans-serif; white-space: nowrap; } .ds-status-dot { position: relative; width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #9aa69e; } .ds-status--ready .ds-status-dot { background: var(--color-accent); } .ds-status--ready .ds-status-dot::after { position: absolute; inset: -4px; border: 1px solid var(--color-accent); border-radius: 50%; animation: ds-connection-pulse 2.4s cubic-bezier(0, 0.55, 0.45, 1) infinite; content: ''; } .ds-status--error { border-color: #543331; color: #f0b3ad; } .ds-status--error .ds-status-dot { background: var(--color-danger); } @keyframes ds-connection-pulse { 0% { opacity: 0.55; transform: scale(0.72); } 100% { opacity: 0; transform: scale(1.65); } } @media (prefers-reduced-motion: reduce) { .ds-status--ready .ds-status-dot::after { animation-duration: 0.01ms; animation-iteration-count: 1; } }"
+    },
+    {
+      "name": "Queue Empty State",
+      "kind": "custom",
+      "description": "Centered first-run queue message and honest unavailable action.",
+      "html": "<section class=\"ds-empty-state\"><svg class=\"ds-signal\" aria-hidden=\"true\" viewBox=\"0 0 72 40\"><circle cx=\"3\" cy=\"20\" r=\"2.5\"/><path d=\"M6 20h14\"/><path d=\"M52 20h16\"/><circle cx=\"70\" cy=\"20\" r=\"2\"/><path d=\"M23 25 31 12l8 16 8-16 7 13\"/></svg><h2>Your queue is clear.</h2><p>Torrent transfers will appear here once download support is available.</p><button type=\"button\" disabled>Add torrent</button><small>Not available in this initial version</small></section>",
+      "css": ".ds-empty-state { display: flex; width: min(420px, calc(100% - 40px)); flex-direction: column; align-items: center; padding: 38px 0; text-align: center; } .ds-signal { width: 72px; height: 40px; fill: #91b86e; stroke: #9fc879; stroke-width: 1.45; stroke-linecap: round; stroke-linejoin: round; } .ds-empty-state h2 { margin: 28px 0 0; color: var(--color-text); font: 590 clamp(27px, 3vw, 34px)/1.2 'Inter Variable', Inter, sans-serif; letter-spacing: -0.035em; } .ds-empty-state p { max-width: 38ch; margin: 11px 0 0; color: var(--color-muted); font: 400 13px/1.7 'Inter Variable', Inter, sans-serif; } .ds-empty-state button { margin-top: 25px; padding: 0 13px; border: 1px solid #627553; border-radius: 9px; background: #78925f; color: #10190d; font: 650 12px/38px 'Inter Variable', Inter, sans-serif; opacity: 0.64; cursor: not-allowed; } .ds-empty-state small { margin-top: 9px; color: var(--color-subtle); font: 400 11px/1.5 'Inter Variable', Inter, sans-serif; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Initial Queue Shell (working visual reference; provisional and descriptive)",
+    "overview": "This name describes the first implemented surface; it is not an approved brand metaphor or differentiated product identity. The current shell uses quiet, green-tinted dark surfaces, fine borders, compact labels, and a single soft-lime accent. Inter Variable carries the interface from the small sidebar labels to the centered empty-queue message.\n\nThe layout gives the library a narrow persistent rail and lets the queue occupy the rest of the native window. The first version is intentionally an honest empty state: its Add torrent control is disabled because download support and a torrent engine are not implemented. Keep future screens consistent with these observed choices until a broader visual direction is established.",
+    "keyCharacteristics": [
+      "Dark, subtly green-tinted neutral surfaces.",
+      "Compact desktop spacing with a persistent library rail.",
+      "Fine borders and gently rounded panels and controls.",
+      "Soft lime reserved for key identity, current, ready, and action cues.",
+      "Clear empty-queue and backend connection states."
+    ],
+    "rules": [
+      { "name": "The Accent Mark Rule", "body": "Keep lime to the brand mark, current or ready indicators, focus treatment, and the primary action surface; it is a cue within the neutral shell, not a broad decoration.", "section": "colors" },
+      { "name": "The Single-Family Rule", "body": "Keep display, body, and labels in the same sans-serif family; distinguish hierarchy with size, weight, and tracking.", "section": "typography" },
+      { "name": "The Flat Surface Rule", "body": "Use surface tone and a restrained border to separate regions; do not add card shadows to the current flat shell.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do keep the shell dark and the surfaces subtly green-tinted.",
+      "Do reserve the lime accent for identity, status, focus, selection, and the action surface.",
+      "Do maintain the compact rail-and-workspace layout and restrained border language.",
+      "Do state clearly that Add torrent is unavailable while download support is absent.",
+      "Do preserve a visible keyboard focus outline and reduced-motion behavior."
+    ],
+    "donts": [
+      "Don't present torrent activity or queue rows that the application does not provide.",
+      "Don't make the disabled Add torrent control look ready to activate.",
+      "Don't add decorative clutter, heavy shadows, or loud outlines to the flat shell.",
+      "Don't introduce a separate display typeface without an established visual direction."
+    ]
+  }
+}
