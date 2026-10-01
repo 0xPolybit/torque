@@ -10,10 +10,10 @@ export interface TorrentStatePresentation {
 export function getTorrentStatePresentation(torrent: TorrentStatus): TorrentStatePresentation {
   if (torrent.state === "error") return { filter: "error", label: "Error" };
   if (torrent.state === "paused") return { filter: "paused", label: "Paused" };
-  if (torrent.state === "seeding" || torrent.progressPercent >= 100) {
+  if (torrent.state === "completed" || torrent.progressPercent >= 100) {
     return { filter: "completed", label: "Completed" };
   }
-  if (torrent.state === "initializing") return { filter: "queued", label: "Queued" };
+  if (torrent.state === "queued") return { filter: "queued", label: "Queued" };
   return { filter: "downloading", label: "Downloading" };
 }
 

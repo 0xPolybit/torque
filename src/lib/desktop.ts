@@ -29,6 +29,14 @@ export interface TorrentFile {
   included: boolean;
 }
 
+export type TorrentState = "queued" | "downloading" | "paused" | "completed" | "error";
+export type TorrentControlAction = "pause" | "resume" | "retry" | "remove" | "open-folder";
+
+export interface TorrentActionState {
+  pending: TorrentControlAction | null;
+  error: string | null;
+}
+
 export interface TorrentStatus {
   id: number;
   infoHash: string;
@@ -36,7 +44,7 @@ export interface TorrentStatus {
   totalPieces: number;
   files: TorrentFile[];
   outputDirectory: string;
-  state: "initializing" | "downloading" | "paused" | "seeding" | "error";
+  state: TorrentState;
   error: string | null;
   progressPercent: number;
   downloadedBytes: number;
@@ -65,6 +73,26 @@ export function getTorrents(): Promise<TorrentStatus[]> {
 
 export function getTorrentStatus(torrentId: number): Promise<TorrentStatus> {
   return invoke<TorrentStatus>("get_torrent_status", { torrentId });
+}
+
+export function pauseTorrent(torrentId: number): Promise<TorrentStatus> {
+  return invoke<TorrentStatus>("pause_torrent", { torrentId });
+}
+
+export function resumeTorrent(torrentId: number): Promise<TorrentStatus> {
+  return invoke<TorrentStatus>("resume_torrent", { torrentId });
+}
+
+export function retryTorrent(torrentId: number): Promise<TorrentStatus> {
+  return invoke<TorrentStatus>("retry_torrent", { torrentId });
+}
+
+export function removeTorrent(torrentId: number): Promise<void> {
+  return invoke<void>("remove_torrent", { torrentId });
+}
+
+export function openTorrentFolder(torrentId: number): Promise<void> {
+  return invoke<void>("open_torrent_folder", { torrentId });
 }
 
 export function addMagnet(

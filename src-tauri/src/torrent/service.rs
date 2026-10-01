@@ -64,6 +64,16 @@ pub struct TorrentFileSelection {
     pub file_name: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TorrentState {
+    Queued,
+    Downloading,
+    Paused,
+    Completed,
+    Error,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TorrentFile {
@@ -81,7 +91,7 @@ pub struct TorrentStatus {
     pub total_pieces: u32,
     pub files: Vec<TorrentFile>,
     pub output_directory: String,
-    pub state: String,
+    pub state: TorrentState,
     pub error: Option<String>,
     pub progress_percent: f64,
     pub downloaded_bytes: u64,
@@ -318,6 +328,49 @@ impl TorrentService {
         self.get_torrent_status(id)
     }
 
+    pub async fn pause_torrent(&self, id: usize) -> Result<TorrentStatus, TorrentError> {
+        self.api
+            .api_torrent_action_pause(TorrentIdOrHash::Id(id))
+            .await
+            .map_err(|error| TorrentError::Engine(error.to_string()))?;
+        self.get_torrent_status(id)
+    }
+
+    pub async fn resume_torrent(&self, id: usize) -> Result<TorrentStatus, TorrentError> {
+        self.start_torrent(id).await
+    }
+
+    pub async fn retry_torrent(&self, id: usize) -> Result<TorrentStatus, TorrentError> {
+        self.start_torrent(id).await
+    }
+
+    async fn start_torrent(&self, id: usize) -> Result<TorrentStatus, TorrentError> {
+        self.api
+            .api_torrent_action_start(TorrentIdOrHash::Id(id))
+            .await
+            .map_err(|error| TorrentError::Engine(error.to_string()))?;
+        self.get_torrent_status(id)
+    }
+
+    /// Remove the session entry without deleting the downloaded data.
+    pub async fn remove_torrent(&self, id: usize) -> Result<(), TorrentError> {
+        self.api
+            .api_torrent_action_forget(TorrentIdOrHash::Id(id))
+            .await
+            .map_err(|error| TorrentError::Engine(error.to_string()))?;
+        Ok(())
+    }
+
+    /// Resolve an output directory from rqbit's torrent record, never from a
+    /// frontend-provided path.
+    pub fn torrent_output_directory(&self, id: usize) -> Result<PathBuf, TorrentError> {
+        let details = self
+            .api
+            .api_torrent_details(TorrentIdOrHash::Id(id))
+            .map_err(|error| TorrentError::Status(error.to_string()))?;
+        validate_directory(Path::new(&details.output_folder))
+    }
+
     pub fn get_torrents(&self) -> Result<Vec<TorrentStatus>, TorrentError> {
         let listed = self
             .api
@@ -436,13 +489,7 @@ fn status_from_parts(
     stats: TorrentStats,
     connected_peers: Option<usize>,
 ) -> TorrentStatus {
-    let state = match stats.state {
-        TorrentStatsState::Initializing { .. } => "initializing",
-        TorrentStatsState::Live if stats.finished => "seeding",
-        TorrentStatsState::Live => "downloading",
-        TorrentStatsState::Paused => "paused",
-        TorrentStatsState::Error => "error",
-    };
+    let state = torrent_state_from_engine(stats.state, stats.finished);
     let progress_percent = if stats.total_bytes == 0 {
         0.0
     } else {
@@ -475,7 +522,7 @@ fn status_from_parts(
             })
             .collect(),
         output_directory: directory_name(Path::new(&details.output_folder)),
-        state: state.to_string(),
+        state,
         error: stats.error,
         progress_percent,
         downloaded_bytes: stats.progress_bytes,
@@ -484,6 +531,17 @@ fn status_from_parts(
         download_speed_bytes_per_second,
         upload_speed_bytes_per_second,
         connected_peers,
+    }
+}
+
+fn torrent_state_from_engine(state: TorrentStatsState, finished: bool) -> TorrentState {
+    match state {
+        TorrentStatsState::Initializing { paused: true } => TorrentState::Paused,
+        TorrentStatsState::Initializing { paused: false } => TorrentState::Queued,
+        TorrentStatsState::Live if finished => TorrentState::Completed,
+        TorrentStatsState::Live => TorrentState::Downloading,
+        TorrentStatsState::Paused => TorrentState::Paused,
+        TorrentStatsState::Error => TorrentState::Error,
     }
 }
 
@@ -554,6 +612,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn completed_engine_state_maps_to_the_app_completed_state() {
+        assert_eq!(
+            torrent_state_from_engine(TorrentStatsState::Live, true),
+            TorrentState::Completed
+        );
+        assert_eq!(
+            torrent_state_from_engine(TorrentStatsState::Live, false),
+            TorrentState::Downloading
+        );
+    }
+
     #[tokio::test]
     async fn selected_output_directory_is_used_when_adding_a_local_torrent() {
         let temp = tempfile::tempdir().expect("temporary test directory");
@@ -598,6 +668,72 @@ mod tests {
                 .add_selected_torrent_file(&file_selection.id, &selected.id)
                 .await,
             Err(TorrentError::UnknownTorrentFileSelection)
+        ));
+        service.api.session().stop().await;
+    }
+
+    #[tokio::test]
+    async fn torrent_can_pause_resume_and_be_removed_while_keeping_files() {
+        let temp = tempfile::tempdir().expect("temporary test directory");
+        let default_directory = temp.path().join("default");
+        let selected_directory = temp.path().join("selected");
+        fs::create_dir_all(&default_directory).expect("default output directory");
+        fs::create_dir_all(&selected_directory).expect("selected output directory");
+        let preserved_file = selected_directory.join("preserve-me.txt");
+        fs::write(&preserved_file, b"downloaded data").expect("write preserved data");
+
+        let session = Session::new_with_opts(
+            default_directory.clone(),
+            SessionOptions {
+                dht: None,
+                listen: None,
+                persistence: None,
+                ..SessionOptions::default()
+            },
+        )
+        .await
+        .expect("create test session");
+        let service =
+            TorrentService::with_session(session, default_directory).expect("create test service");
+        let selected = service
+            .register_download_directory(selected_directory.clone())
+            .expect("register the chosen folder");
+        let torrent_file = temp.path().join("sample.torrent");
+        fs::write(&torrent_file, ONE_BYTE_TORRENT).expect("write torrent metadata");
+        let added = service
+            .add_torrent_file(&torrent_file, &selected.id)
+            .await
+            .expect("add torrent to the local test session");
+
+        assert_eq!(
+            service
+                .torrent_output_directory(added.id)
+                .expect("resolve its registered output folder"),
+            fs::canonicalize(&selected_directory).expect("canonical selected folder")
+        );
+        let paused = service
+            .pause_torrent(added.id)
+            .await
+            .expect("pause the torrent");
+        assert_eq!(paused.state, TorrentState::Paused);
+
+        let resumed = service
+            .resume_torrent(added.id)
+            .await
+            .expect("resume the torrent");
+        assert_ne!(resumed.state, TorrentState::Paused);
+
+        service
+            .remove_torrent(added.id)
+            .await
+            .expect("remove torrent without deleting its files");
+        assert_eq!(
+            fs::read(&preserved_file).expect("preserved file remains"),
+            b"downloaded data"
+        );
+        assert!(matches!(
+            service.get_torrent_status(added.id),
+            Err(TorrentError::Status(_))
         ));
         service.api.session().stop().await;
     }

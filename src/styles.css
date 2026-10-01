@@ -455,6 +455,7 @@ button:focus-visible,
 .torrent-row__header,
 .torrent-row__identity,
 .torrent-row__destination,
+.torrent-row__header-side,
 .torrent-row__progress-meta,
 .torrent-row__eta,
 .torrent-row__stat {
@@ -470,6 +471,82 @@ button:focus-visible,
 .torrent-row__identity {
   min-width: 0;
   gap: 10px;
+}
+
+.torrent-row__header-side {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.torrent-row__action,
+.torrent-row__remove {
+  display: inline-flex;
+  min-height: 29px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid #354139;
+  border-radius: 7px;
+  background: #1a211c;
+  color: #c9d4cb;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 560;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, opacity 140ms ease;
+}
+
+.torrent-row__action {
+  padding: 0 9px;
+}
+
+.torrent-row__action--pause {
+  border-color: #3b4a37;
+  color: #d7e3d2;
+}
+
+.torrent-row__action--open-folder {
+  border-color: #33463a;
+  color: #c4d9c9;
+}
+
+.torrent-row__action--retry {
+  border-color: #59443a;
+  color: #e3c8a7;
+}
+
+.torrent-row__action:hover:not(:disabled),
+.torrent-row__remove:hover:not(:disabled) {
+  border-color: #506052;
+  background: #232d26;
+  color: #eff5ef;
+}
+
+.torrent-row__action:focus-visible,
+.torrent-row__remove:focus-visible {
+  outline: 2px solid rgb(183 233 139 / 70%);
+  outline-offset: 2px;
+}
+
+.torrent-row__action:disabled,
+.torrent-row__remove:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
+
+.torrent-row__remove {
+  width: 29px;
+  padding: 0;
+  color: #a8b3aa;
+}
+
+.torrent-row__action-spinner {
+  animation: torrent-control-spin 900ms linear infinite;
+}
+
+@keyframes torrent-control-spin {
+  to { transform: rotate(360deg); }
 }
 
 .torrent-row__icon,
@@ -588,6 +665,22 @@ button:focus-visible,
   color: #f0b3ad;
   font-size: 11px;
   text-overflow: ellipsis;
+}
+
+.torrent-row__action-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 8px 0 0 43px;
+  color: #f0b3ad;
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.torrent-row__action-error svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
 }
 
 .torrent-row__error svg {

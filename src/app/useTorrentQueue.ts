@@ -7,8 +7,15 @@ import {
   describeError,
   getDownloadDirectories,
   getTorrents,
+  openTorrentFolder as openDesktopTorrentFolder,
+  pauseTorrent as pauseDesktopTorrent,
+  removeTorrent as removeDesktopTorrent,
+  resumeTorrent as resumeDesktopTorrent,
+  retryTorrent as retryDesktopTorrent,
   selectDownloadDirectory,
   selectTorrentFile as selectNativeTorrentFile,
+  type TorrentActionState,
+  type TorrentControlAction,
   type DownloadDirectory,
   type TorrentFileSelection,
   type TorrentStatus,
@@ -39,6 +46,7 @@ export function useTorrentQueue(enabled: boolean) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [selectingFile, setSelectingFile] = useState(false);
+  const [torrentActions, setTorrentActions] = useState<Record<number, TorrentActionState>>({});
 
   useEffect(() => {
     if (selectedDirectoryId) rememberDirectoryId(selectedDirectoryId);
@@ -144,6 +152,47 @@ export function useTorrentQueue(enabled: boolean) {
     [refreshTorrents, selectedDirectoryId],
   );
 
+  const runTorrentAction = useCallback(
+    async (
+      torrentId: number,
+      action: TorrentControlAction,
+      operation: () => Promise<TorrentStatus | void>,
+    ): Promise<boolean> => {
+      setTorrentActions((current) => ({
+        ...current,
+        [torrentId]: { pending: action, error: null },
+      }));
+      try {
+        const updated = await operation();
+        if (updated && "state" in updated) {
+          setTorrents((current) => current.map((torrent) =>
+            torrent.id === torrentId ? updated : torrent,
+          ));
+        }
+        if (action === "remove") {
+          setTorrents((current) => current.filter((torrent) => torrent.id !== torrentId));
+          await refreshTorrents();
+        }
+        return true;
+      } catch (cause) {
+        setTorrentActions((current) => ({
+          ...current,
+          [torrentId]: { pending: null, error: describeError(cause) },
+        }));
+        return false;
+      } finally {
+        setTorrentActions((current) => ({
+          ...current,
+          [torrentId]: {
+            pending: null,
+            error: current[torrentId]?.error ?? null,
+          },
+        }));
+      }
+    },
+    [refreshTorrents],
+  );
+
   return {
     torrents,
     directories,
@@ -153,10 +202,21 @@ export function useTorrentQueue(enabled: boolean) {
     setError,
     busy,
     selectingFile,
+    torrentActions,
     refreshTorrents,
     chooseDirectory,
     chooseTorrentFile,
     discardTorrentFile,
+    pauseTorrent: (torrentId: number) =>
+      runTorrentAction(torrentId, "pause", () => pauseDesktopTorrent(torrentId)),
+    resumeTorrent: (torrentId: number) =>
+      runTorrentAction(torrentId, "resume", () => resumeDesktopTorrent(torrentId)),
+    retryTorrent: (torrentId: number) =>
+      runTorrentAction(torrentId, "retry", () => retryDesktopTorrent(torrentId)),
+    removeTorrent: (torrentId: number) =>
+      runTorrentAction(torrentId, "remove", () => removeDesktopTorrent(torrentId)),
+    openTorrentFolder: (torrentId: number) =>
+      runTorrentAction(torrentId, "open-folder", () => openDesktopTorrentFolder(torrentId)),
     addMagnet: (link: string) =>
       add(() => addMagnet(link, selectedDirectoryId)),
     addTorrentUrl: (url: string) =>

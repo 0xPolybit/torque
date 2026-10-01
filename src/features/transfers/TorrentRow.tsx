@@ -5,10 +5,16 @@ import {
   Download,
   FileDown,
   FolderDown,
+  FolderOpen,
+  LoaderCircle,
+  Pause,
+  Play,
+  RotateCw,
+  Trash2,
   Upload,
   Users,
 } from "lucide-react";
-import type { TorrentStatus } from "../../lib/desktop";
+import type { TorrentControlAction, TorrentStatus } from "../../lib/desktop";
 import { TorrentStateBadge } from "./TorrentStateBadge";
 import {
   estimateTimeRemaining,
@@ -19,9 +25,25 @@ import {
 
 interface TorrentRowProps {
   torrent: TorrentStatus;
+  pendingAction?: TorrentControlAction | null;
+  actionError?: string | null;
+  onPause: (torrentId: number) => Promise<boolean>;
+  onResume: (torrentId: number) => Promise<boolean>;
+  onRetry: (torrentId: number) => Promise<boolean>;
+  onRemove: (torrentId: number) => Promise<boolean>;
+  onOpenFolder: (torrentId: number) => Promise<boolean>;
 }
 
-export function TorrentRow({ torrent }: TorrentRowProps) {
+export function TorrentRow({
+  torrent,
+  pendingAction = null,
+  actionError = null,
+  onPause,
+  onResume,
+  onRetry,
+  onRemove,
+  onOpenFolder,
+}: TorrentRowProps) {
   const title = torrent.name?.trim() || "Waiting for torrent metadata";
   const progress = Number.isFinite(torrent.progressPercent)
     ? Math.max(0, Math.min(100, torrent.progressPercent))
@@ -29,9 +51,34 @@ export function TorrentRow({ torrent }: TorrentRowProps) {
   const roundedProgress = Math.round(progress);
   const presentation = getTorrentStatePresentation(torrent);
   const eta = estimateTimeRemaining(torrent);
+  const actionBusy = pendingAction !== null;
+
+  let primaryAction: { kind: TorrentControlAction; label: string; icon: typeof Pause; invoke: (id: number) => Promise<boolean> } | null = null;
+  if (torrent.state === "downloading") {
+    primaryAction = { kind: "pause", label: "Pause", icon: Pause, invoke: onPause };
+  } else if (torrent.state === "paused") {
+    primaryAction = { kind: "resume", label: "Resume", icon: Play, invoke: onResume };
+  } else if (torrent.state === "completed") {
+    primaryAction = { kind: "open-folder", label: "Open folder", icon: FolderOpen, invoke: onOpenFolder };
+  } else if (torrent.state === "error") {
+    primaryAction = { kind: "retry", label: "Retry", icon: RotateCw, invoke: onRetry };
+  }
+
+  const actionLabel = pendingAction === "pause"
+    ? "Pausing…"
+    : pendingAction === "resume"
+      ? "Resuming…"
+      : pendingAction === "retry"
+        ? "Retrying…"
+        : pendingAction === "remove"
+          ? "Removing…"
+          : pendingAction === "open-folder"
+            ? "Opening…"
+            : null;
+  const PrimaryIcon = primaryAction?.icon;
 
   return (
-    <article className={`torrent-row torrent-row--${presentation.filter}`} role="listitem">
+    <article className={`torrent-row torrent-row--${presentation.filter}`} role="listitem" aria-busy={actionBusy}>
       <div className="torrent-row__header">
         <div className="torrent-row__identity">
           <div className="torrent-row__icon" aria-hidden="true">
@@ -45,13 +92,48 @@ export function TorrentRow({ torrent }: TorrentRowProps) {
             </span>
           </div>
         </div>
-        <TorrentStateBadge torrent={torrent} />
+        <div className="torrent-row__header-side">
+          <TorrentStateBadge torrent={torrent} />
+          {primaryAction && (
+            <button
+              className={`torrent-row__action torrent-row__action--${primaryAction.kind}`}
+              type="button"
+              aria-label={actionLabel ?? primaryAction.label}
+              title={primaryAction.kind === "open-folder" ? "Open this torrent’s download folder" : primaryAction.label}
+              disabled={actionBusy}
+              onClick={() => void primaryAction.invoke(torrent.id)}
+            >
+              {actionBusy && pendingAction === primaryAction.kind
+                ? <LoaderCircle size={13} className="torrent-row__action-spinner" aria-hidden="true" />
+                : PrimaryIcon && <PrimaryIcon size={13} aria-hidden="true" />}
+              <span>{actionLabel && pendingAction === primaryAction.kind ? actionLabel : primaryAction.label}</span>
+            </button>
+          )}
+          <button
+            className="torrent-row__remove"
+            type="button"
+            aria-label={torrent.state === "completed" ? "Remove from list, keep downloaded files" : "Remove torrent, keep downloaded files"}
+            title={torrent.state === "completed" ? "Remove from list · keep files" : "Remove · keep downloaded files"}
+            disabled={actionBusy}
+            onClick={() => void onRemove(torrent.id)}
+          >
+            {pendingAction === "remove"
+              ? <LoaderCircle size={14} className="torrent-row__action-spinner" aria-hidden="true" />
+              : <Trash2 size={14} aria-hidden="true" />}
+          </button>
+        </div>
       </div>
 
       {torrent.error && (
         <p className="torrent-row__error" role="alert">
           <AlertCircle size={13} aria-hidden="true" />
           <span>{torrent.error}</span>
+        </p>
+      )}
+      {actionError && (
+        <p className="torrent-row__action-error" role="alert">
+          <AlertCircle size={13} aria-hidden="true" />
+          <span>{actionError}</span>
         </p>
       )}
 

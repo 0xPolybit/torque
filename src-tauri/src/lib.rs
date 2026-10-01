@@ -7,6 +7,7 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let default_output = app
                 .path()
@@ -31,7 +32,12 @@ pub fn run() {
             commands::add_torrent_file,
             commands::add_torrent_url,
             commands::get_torrents,
-            commands::get_torrent_status
+            commands::get_torrent_status,
+            commands::pause_torrent,
+            commands::resume_torrent,
+            commands::retry_torrent,
+            commands::remove_torrent,
+            commands::open_torrent_folder
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Torque desktop shell");

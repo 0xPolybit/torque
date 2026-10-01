@@ -24,10 +24,10 @@ export default function App() {
     [queue.torrents, filter],
   );
   const activeCount = queue.torrents.filter((torrent) =>
-    torrent.state === "initializing" || torrent.state === "downloading",
+    torrent.state === "queued" || torrent.state === "downloading",
   ).length;
   const completedCount = queue.torrents.filter((torrent) =>
-    torrent.state === "seeding" || torrent.progressPercent >= 100,
+    torrent.state === "completed" || torrent.progressPercent >= 100,
   ).length;
 
   return (
@@ -85,7 +85,17 @@ export default function App() {
               </span>
             </div>
             {visibleTorrents.length > 0
-              ? <TorrentList torrents={visibleTorrents} />
+              ? (
+                <TorrentList
+                  torrents={visibleTorrents}
+                  actions={queue.torrentActions}
+                  onPause={queue.pauseTorrent}
+                  onResume={queue.resumeTorrent}
+                  onRetry={queue.retryTorrent}
+                  onRemove={queue.removeTorrent}
+                  onOpenFolder={queue.openTorrentFolder}
+                />
+              )
               : <EmptyFilter filter={filter} />}
           </div>
         )}

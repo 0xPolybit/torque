@@ -2,6 +2,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_opener::OpenerExt;
 
 use crate::torrent::{DownloadDirectory, TorrentFileSelection, TorrentService, TorrentStatus};
 
@@ -148,4 +149,62 @@ pub fn get_torrent_status(
     service
         .get_torrent_status(torrent_id)
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn pause_torrent(
+    service: State<'_, TorrentService>,
+    torrent_id: usize,
+) -> Result<TorrentStatus, String> {
+    service
+        .pause_torrent(torrent_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn resume_torrent(
+    service: State<'_, TorrentService>,
+    torrent_id: usize,
+) -> Result<TorrentStatus, String> {
+    service
+        .resume_torrent(torrent_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn retry_torrent(
+    service: State<'_, TorrentService>,
+    torrent_id: usize,
+) -> Result<TorrentStatus, String> {
+    service
+        .retry_torrent(torrent_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn remove_torrent(
+    service: State<'_, TorrentService>,
+    torrent_id: usize,
+) -> Result<(), String> {
+    service
+        .remove_torrent(torrent_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn open_torrent_folder(
+    app: AppHandle,
+    service: State<'_, TorrentService>,
+    torrent_id: usize,
+) -> Result<(), String> {
+    let directory = service
+        .torrent_output_directory(torrent_id)
+        .map_err(|error| error.to_string())?;
+    app.opener()
+        .open_path(directory.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|error| format!("Could not open the torrent's download folder: {error}"))
 }
