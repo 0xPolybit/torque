@@ -4,11 +4,11 @@
 
 ## Platform
 
-Cross-platform desktop (Tauri 2).
+adaptive
 
 ## Stack
 
-React, TypeScript, Vite, Tauri 2, and Rust, as specified for the initial build.
+React, TypeScript, Vite, Tauri 2, Rust, and librqbit for BitTorrent transfers.
 
 ## Users
 
@@ -16,7 +16,7 @@ People who want a desktop application for managing torrent downloads. This audie
 
 ## Product Purpose
 
-Torque is intended to download and manage torrents in a desktop application. The first version establishes the desktop shell, frontend-to-Rust communication, and an empty downloads view. It succeeds when the app launches and its frontend and backend build reliably.
+Torque downloads and monitors torrents in a cross-platform desktop application. It accepts magnet links, local `.torrent` files, and HTTP/HTTPS torrent URLs, and reports progress and transfer stats from the Rust engine.
 
 ## Positioning
 
@@ -28,21 +28,24 @@ The application runs locally on a desktop operating system. Filesystem locations
 
 ## Capabilities and Constraints
 
-- The initial version is application scaffolding with a working Tauri command; torrent downloading, queue management, and a torrent engine are not in scope yet.
-- The empty state has a disabled “Add torrent” action until download support exists.
+- The Rust service owns the rqbit session, torrent file reads, and selected output paths.
+- The frontend can request native file/folder pickers and use opaque output-directory IDs; it does not receive unrestricted filesystem access.
+- The service reports metadata, state, progress, speeds, and connected peers when available.
+- Pause, resume, removal, file selection, and additional queue controls can be added through the service layer.
 - The frontend must handle backend invocation failures without preventing the interface from rendering.
 
 ## Brand Commitments
 
 - Product name: Torque.
-- Explicit interface constraints for the initial application: dark by default, minimal, rounded panels, subtle borders, compact desktop-first spacing, clear typography, native-feeling window chrome, and no unnecessary visual clutter.
+- Interface direction: dark by default, minimal, rounded panels, subtle borders, compact desktop-first spacing, clear typography, native-feeling window chrome, and no unnecessary visual clutter.
 
 ## Evidence on Hand
 
-The repository began with a short product README and no application code, product assets, or torrent-engine implementation. Do not invent download activity, user data, or product claims.
+The repository began as a Tauri shell and gained its first rqbit-backed transfer flow in this implementation. Displayed download activity and statistics must come from the engine; do not invent transfer data or imply authorization for a torrent's contents.
 
 ## Product Principles
 
-- Keep the first version honest about which download features are not yet available.
+- Keep the transfer list and statistics tied to rqbit state.
 - Use operating-system-aware filesystem APIs.
 - Keep frontend/backend boundaries clear and command failures understandable.
+- Support downloading only content the user is legally authorized to access.

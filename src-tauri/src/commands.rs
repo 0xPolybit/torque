@@ -1,5 +1,9 @@
 use serde::Serialize;
-use tauri::{AppHandle, Manager};
+use std::path::PathBuf;
+use tauri::{AppHandle, Manager, State};
+use tauri_plugin_dialog::DialogExt;
+
+use crate::torrent::{DownloadDirectory, TorrentService, TorrentStatus};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,4 +29,103 @@ pub fn get_app_info(app: AppHandle) -> AppInfo {
         platform: std::env::consts::OS,
         default_download_directory: download_directory,
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadDirectoryList {
+    default_id: String,
+    directories: Vec<DownloadDirectory>,
+}
+
+#[tauri::command]
+pub fn get_download_directories(
+    service: State<'_, TorrentService>,
+) -> Result<DownloadDirectoryList, String> {
+    Ok(DownloadDirectoryList {
+        default_id: service.default_directory_id().to_string(),
+        directories: service
+            .list_download_directories()
+            .map_err(|error| error.to_string())?,
+    })
+}
+
+#[tauri::command]
+pub async fn select_download_directory(
+    app: AppHandle,
+    service: State<'_, TorrentService>,
+) -> Result<Option<DownloadDirectory>, String> {
+    let Some(selected) = app.dialog().file().blocking_pick_folder() else {
+        return Ok(None);
+    };
+    let path: PathBuf = selected
+        .into_path()
+        .map_err(|error| format!("Could not access the selected folder: {error}"))?;
+    service
+        .register_download_directory(path)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn add_magnet(
+    service: State<'_, TorrentService>,
+    magnet_link: String,
+    output_directory_id: String,
+) -> Result<TorrentStatus, String> {
+    service
+        .add_magnet(&magnet_link, &output_directory_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn add_torrent_file(
+    app: AppHandle,
+    service: State<'_, TorrentService>,
+    output_directory_id: String,
+) -> Result<Option<TorrentStatus>, String> {
+    let Some(selected) = app
+        .dialog()
+        .file()
+        .add_filter("Torrent files", &["torrent"])
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let path: PathBuf = selected
+        .into_path()
+        .map_err(|error| format!("Could not access the selected torrent file: {error}"))?;
+    service
+        .add_torrent_file(&path, &output_directory_id)
+        .await
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn add_torrent_url(
+    service: State<'_, TorrentService>,
+    torrent_url: String,
+    output_directory_id: String,
+) -> Result<TorrentStatus, String> {
+    service
+        .add_torrent_url(&torrent_url, &output_directory_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn get_torrents(service: State<'_, TorrentService>) -> Result<Vec<TorrentStatus>, String> {
+    service.get_torrents().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn get_torrent_status(
+    service: State<'_, TorrentService>,
+    torrent_id: usize,
+) -> Result<TorrentStatus, String> {
+    service
+        .get_torrent_status(torrent_id)
+        .map_err(|error| error.to_string())
 }

@@ -229,6 +229,12 @@ button:focus-visible,
   gap: 20px;
 }
 
+.workspace__actions {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
 .workspace__header h1 {
   margin: 0;
   color: var(--color-text);
@@ -319,6 +325,40 @@ button:focus-visible,
   background: #412a28;
 }
 
+.primary-button {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 1px solid #819b6c;
+  border-radius: var(--radius-control);
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background-color 160ms ease, border-color 160ms ease, opacity 160ms ease;
+}
+
+.primary-button:hover:not(:disabled),
+.empty-queue__action:hover:not(:disabled) {
+  border-color: #b9e998;
+  background: #c7f39d;
+}
+
+.primary-button:active:not(:disabled),
+.empty-queue__action:active:not(:disabled) {
+  background: #a7d779;
+}
+
+.primary-button:disabled,
+.empty-queue__action:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -337,6 +377,499 @@ button:focus-visible,
   border: 1px solid var(--color-border);
   border-radius: var(--radius-panel);
   background: var(--color-panel);
+}
+
+.queue-error {
+  overflow: hidden;
+  padding: 9px 12px;
+  border: 1px solid #543331;
+  border-radius: var(--radius-control);
+  color: #f0b3ad;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-panel--populated {
+  display: block;
+  overflow: hidden;
+}
+
+.torrent-list {
+  height: 100%;
+  overflow: auto;
+  padding: 2px 22px;
+}
+
+.torrent-item {
+  padding: 19px 0 17px;
+  border-bottom: 1px solid var(--color-border-soft);
+}
+
+.torrent-item:last-child {
+  border-bottom: 0;
+}
+
+.torrent-item__topline,
+.torrent-item__identity,
+.torrent-item__metrics {
+  display: flex;
+  align-items: center;
+}
+
+.torrent-item__topline {
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.torrent-item__identity {
+  min-width: 0;
+  gap: 11px;
+}
+
+.torrent-item__icon,
+.add-dialog__file-icon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid #334139;
+  border-radius: 9px;
+  background: #19221c;
+  color: #b4d894;
+}
+
+.torrent-item__icon {
+  width: 34px;
+  height: 34px;
+}
+
+.torrent-item__title-group {
+  min-width: 0;
+}
+
+.torrent-item__title-group h2 {
+  overflow: hidden;
+  margin: 0;
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 610;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.torrent-item__hash {
+  display: block;
+  max-width: 58ch;
+  overflow: hidden;
+  margin-top: 3px;
+  color: var(--color-subtle);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.torrent-state {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 99px;
+  color: var(--color-muted);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.torrent-state__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #8a988f;
+}
+
+.torrent-state--downloading .torrent-state__dot,
+.torrent-state--seeding .torrent-state__dot {
+  background: var(--color-accent);
+}
+
+.torrent-state--error {
+  border-color: #543331;
+  color: #f0b3ad;
+}
+
+.torrent-state--error .torrent-state__dot {
+  background: var(--color-danger);
+}
+
+.torrent-item__error {
+  margin: 10px 0 0 45px;
+  color: #f0b3ad;
+  font-size: 11px;
+}
+
+.torrent-progress {
+  height: 4px;
+  overflow: hidden;
+  margin: 13px 0 10px 45px;
+  border-radius: 99px;
+  background: #252e29;
+}
+
+.torrent-progress span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-accent);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 500ms ease-out;
+}
+
+.torrent-item__metrics {
+  flex-wrap: wrap;
+  gap: 8px 17px;
+  margin-left: 45px;
+  color: var(--color-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.torrent-item__metrics > span:not(.torrent-item__downloaded) {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.torrent-item__metrics svg {
+  color: #8f9d93;
+}
+
+.torrent-item__downloaded {
+  color: #d2d9d3;
+}
+
+.torrent-item__folder {
+  margin-left: auto;
+  color: var(--color-subtle);
+}
+
+.torrent-item__details {
+  margin: 13px 0 0 45px;
+  color: var(--color-muted);
+  font-size: 10px;
+}
+
+.torrent-item__details summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #aeb9b1;
+  cursor: pointer;
+  list-style: none;
+}
+
+.torrent-item__details summary::-webkit-details-marker {
+  display: none;
+}
+
+.torrent-item__details[open] summary svg {
+  transform: rotate(180deg);
+}
+
+.torrent-item__details ul {
+  display: grid;
+  gap: 6px;
+  max-height: 150px;
+  overflow: auto;
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.torrent-item__details li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 3px 0;
+}
+
+.torrent-item__details li span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.add-dialog {
+  width: min(520px, calc(100vw - 40px));
+  max-width: none;
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+  padding: 22px;
+  border: 1px solid #334039;
+  border-radius: 16px;
+  background: #141a16;
+  color: var(--color-text);
+}
+
+.add-dialog::backdrop {
+  background: rgb(4 7 5 / 74%);
+}
+
+.add-dialog__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 15px;
+}
+
+.add-dialog__header h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 620;
+  letter-spacing: -0.025em;
+}
+
+.add-dialog__header p {
+  margin: 5px 0 0;
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
+.icon-button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+}
+
+.icon-button:hover {
+  border-color: var(--color-border);
+  background: #1c241f;
+  color: var(--color-text);
+}
+
+.add-dialog__tabs {
+  display: flex;
+  gap: 4px;
+  margin-top: 21px;
+  padding: 4px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: #101411;
+}
+
+.add-dialog__tabs button {
+  display: inline-flex;
+  min-height: 31px;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.add-dialog__tabs button:hover:not(.is-selected) {
+  background: #1a201c;
+  color: var(--color-text);
+}
+
+.add-dialog__tabs button.is-selected {
+  border-color: #303a33;
+  background: #1d251f;
+  color: #dfe8df;
+}
+
+.add-dialog__tabs button.is-selected svg {
+  color: var(--color-accent);
+}
+
+.add-dialog__form {
+  display: flex;
+  flex-direction: column;
+  margin-top: 19px;
+}
+
+.field-label,
+.add-dialog__destination-content label {
+  color: #c2ccc5;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.add-dialog input,
+.add-dialog textarea,
+.add-dialog select {
+  width: 100%;
+  border: 1px solid #303a34;
+  border-radius: 8px;
+  background: #0f1311;
+  color: var(--color-text);
+  font: inherit;
+}
+
+.add-dialog input,
+.add-dialog select {
+  min-height: 38px;
+  padding: 0 10px;
+}
+
+.add-dialog textarea {
+  min-height: 83px;
+  resize: vertical;
+  margin-top: 7px;
+  padding: 9px 10px;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.add-dialog input {
+  margin-top: 7px;
+  font-size: 11px;
+}
+
+.add-dialog input::placeholder,
+.add-dialog textarea::placeholder {
+  color: #77847a;
+}
+
+.add-dialog input:hover,
+.add-dialog textarea:hover,
+.add-dialog select:hover {
+  border-color: #46534a;
+}
+
+.add-dialog input:focus,
+.add-dialog textarea:focus,
+.add-dialog select:focus {
+  border-color: #7f9d68;
+  outline: 2px solid rgb(183 233 139 / 23%);
+  outline-offset: 1px;
+}
+
+.add-dialog__submit {
+  align-self: flex-end;
+  margin-top: 14px;
+}
+
+.add-dialog__file-prompt {
+  display: flex;
+  min-height: 185px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  text-align: center;
+}
+
+.add-dialog__file-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+}
+
+.add-dialog__file-prompt p {
+  margin: 12px 0;
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
+.add-dialog__destination {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 20px;
+  padding: 12px 0 0;
+  border-top: 1px solid var(--color-border-soft);
+}
+
+.add-dialog__destination-icon {
+  display: grid;
+  width: 31px;
+  height: 31px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 8px;
+  color: #a6b5aa;
+}
+
+.add-dialog__destination-content {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 4px;
+}
+
+.add-dialog__destination-content label {
+  color: var(--color-subtle);
+  font-size: 10px;
+}
+
+.add-dialog__destination-content select {
+  min-height: 26px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text);
+  font-size: 11px;
+}
+
+.add-dialog__destination-content select:focus {
+  outline-offset: 0;
+}
+
+.add-dialog__destination-content > span {
+  overflow: hidden;
+  color: var(--color-subtle);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.text-button {
+  min-height: 29px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: #1a211c;
+  color: #c5d0c7;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.text-button:hover {
+  border-color: #46534a;
+  background: #202922;
+}
+
+.add-dialog__error {
+  margin: 13px 0 0;
+  padding: 8px 9px;
+  border: 1px solid #543331;
+  border-radius: 7px;
+  color: #f0b3ad;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.add-dialog__legal-note {
+  margin: 12px 0 0;
+  color: #7f8b82;
+  font-size: 9px;
 }
 
 .empty-queue {
@@ -412,20 +945,11 @@ button:focus-visible,
   color: var(--color-accent-ink);
   font-size: 12px;
   font-weight: 650;
+  cursor: pointer;
 }
 
 .empty-queue__action:disabled {
-  border-color: #627553;
-  background: #78925f;
-  color: #10190d;
   cursor: not-allowed;
-  opacity: 0.64;
-}
-
-.empty-queue__note {
-  margin-top: 9px;
-  color: var(--color-subtle);
-  font-size: 11px;
 }
 
 @keyframes connection-pulse {
@@ -447,6 +971,25 @@ button:focus-visible,
 
   .workspace {
     padding: 24px 23px;
+  }
+
+  .workspace__header {
+    align-items: flex-start;
+  }
+
+  .workspace__actions {
+    align-items: flex-end;
+    flex-direction: column-reverse;
+    gap: 8px;
+  }
+
+  .torrent-list {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .torrent-item__folder {
+    margin-left: 0;
   }
 }
 

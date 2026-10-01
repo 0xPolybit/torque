@@ -1,6 +1,11 @@
-import { Plus, Waypoints } from "lucide-react";
+import { Waypoints } from "lucide-react";
 
-export function EmptyQueue() {
+interface EmptyQueueProps {
+  onAdd: () => void;
+  disabled: boolean;
+}
+
+export function EmptyQueue({ onAdd, disabled }: EmptyQueueProps) {
   return (
     <section className="queue-panel" aria-labelledby="queue-empty-title">
       <div className="empty-queue">
@@ -14,22 +19,17 @@ export function EmptyQueue() {
 
         <h2 id="queue-empty-title">Your queue is clear.</h2>
         <p className="empty-queue__description">
-          Torrent transfers will appear here once download support is available.
+          Add a magnet link, a .torrent file, or a torrent URL to start a transfer.
         </p>
 
         <button
           className="empty-queue__action"
           type="button"
-          disabled
-          aria-describedby="add-torrent-note"
-          title="Download support is not available yet"
+          disabled={disabled}
+          onClick={onAdd}
         >
-          <Plus size={16} strokeWidth={2} aria-hidden="true" />
-          <span>Add torrent</span>
+          <span>Add a torrent</span>
         </button>
-        <span id="add-torrent-note" className="empty-queue__note">
-          Not available in this initial version
-        </span>
       </div>
     </section>
   );

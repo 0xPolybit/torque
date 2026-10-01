@@ -3,6 +3,7 @@ import type { DesktopConnection } from "../app/useDesktopConnection";
 
 interface SidebarProps {
   connection: DesktopConnection;
+  torrentCount: number;
 }
 
 function folderName(path: string): string {
@@ -10,7 +11,7 @@ function folderName(path: string): string {
   return parts.at(-1) || path;
 }
 
-export function Sidebar({ connection }: SidebarProps) {
+export function Sidebar({ connection, torrentCount }: SidebarProps) {
   const info = connection.state === "connected" ? connection.info : null;
 
   return (
@@ -25,7 +26,9 @@ export function Sidebar({ connection }: SidebarProps) {
         <span className="sidebar__nav-item" aria-current="page">
           <ListMusic size={17} strokeWidth={1.8} aria-hidden="true" />
           <span>All torrents</span>
-          <span className="sidebar__count" aria-label="0 torrents">0</span>
+          <span className="sidebar__count" aria-label={`${torrentCount} torrents`}>
+            {torrentCount}
+          </span>
         </span>
       </nav>
 
