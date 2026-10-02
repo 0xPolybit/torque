@@ -7,6 +7,10 @@ export interface AppInfo {
   defaultDownloadDirectory: string | null;
 }
 
+export interface AppPreferences {
+  resumeUnfinishedOnStartup: boolean;
+}
+
 export interface DownloadDirectory {
   id: string;
   name: string;
@@ -53,10 +57,21 @@ export interface TorrentStatus {
   downloadSpeedBytesPerSecond: number;
   uploadSpeedBytesPerSecond: number | null;
   connectedPeers: number | null;
+  addedAt: number;
+  completedAt: number | null;
+  engineAvailable: boolean;
 }
 
 export function getAppInfo(): Promise<AppInfo> {
   return invoke<AppInfo>("get_app_info");
+}
+
+export function getAppPreferences(): Promise<AppPreferences> {
+  return invoke<AppPreferences>("get_app_preferences");
+}
+
+export function setResumeUnfinishedOnStartup(enabled: boolean): Promise<AppPreferences> {
+  return invoke<AppPreferences>("set_resume_unfinished_on_startup", { enabled });
 }
 
 export function getDownloadDirectories(): Promise<DownloadDirectoryList> {

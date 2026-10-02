@@ -1386,6 +1386,28 @@ button:focus-visible,
   white-space: nowrap;
 }
 
+.settings-row--preference {
+  cursor: pointer;
+}
+
+.settings-row__toggle {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  margin: 0 2px 0 12px;
+  accent-color: var(--color-accent);
+  cursor: inherit;
+}
+
+.settings-row__toggle:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+
+.settings-row__toggle:disabled {
+  cursor: wait;
+}
+
 .settings-row__ready {
   flex: 0 0 auto;
   color: var(--color-accent);

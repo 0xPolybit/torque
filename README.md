@@ -29,7 +29,8 @@ src-tauri/
     commands.rs           Thin Tauri command and native-picker adapters
     torrent/
       mod.rs              Torrent service exports
-      service.rs          rqbit session, validation, directory grants, and status mapping
+      service.rs          rqbit session, validation, directory grants, restoration, and status mapping
+      persistence.rs      Versioned app state, download timestamps, folder, and preferences
     lib.rs                Service setup and command registration
     main.rs               Native application entry point
   tauri.conf.json         Window, security, and build configuration
@@ -80,7 +81,7 @@ The frontend runs at `http://127.0.0.1:1420`. Tauri commands are available only 
 - **HTTP/HTTPS torrent URL:** enter an `http://` or `https://` address. Malformed URLs, other schemes, and credential-bearing URLs are rejected with an inline message.
 - **Output folder:** Torque uses the system Downloads folder by default. **Change folder** opens the native directory picker, and the dialog displays the selected folder path. **Start Download** passes only a directory ID to Rust, which verifies the ID and path before use.
 
-The frontend does not receive filesystem APIs or submit arbitrary local paths. Rust retains the paths granted by the native pickers and returns opaque IDs plus display-only folder information. The most recently selected folder ID is remembered in webview session storage; on startup Torque uses it only if it is still present in the backend's current set of folder grants, otherwise the default folder is selected. Paths and torrent-file selections are not persisted in browser storage.
+The frontend does not receive filesystem APIs or submit arbitrary local paths. Rust retains paths granted by the native pickers and returns opaque IDs plus display-only folder information. The last folder selected in the native picker is saved by Rust and restored as the default for new downloads on the next launch. If that folder is unavailable, Torque falls back to the system Downloads folder (then an app-data Downloads folder) and clears the stale selection. Paths and torrent-file selections are not persisted in browser storage.
 
 After a successful submission the dialog closes and the new torrent appears immediately in the queue, then the queue refreshes from rqbit. Failed submissions remain in the dialog so the user can correct the source, choose another folder, or retry; the error is shown instead of being discarded.
 
@@ -88,9 +89,13 @@ After a successful submission the dialog closes and the new torrent appears imme
 
 `TorrentService` in `src-tauri/src/torrent/service.rs` owns a long-lived rqbit `Session` and its serializable `Api` facade. Tauri creates the service once at startup, enables rqbit fast resume and JSON session persistence under the app-data directory, then manages it as application state. Each add operation passes its validated output folder through rqbit's per-torrent `AddTorrentOptions`.
 
-`src-tauri/src/commands.rs` contains thin commands for folder selection, adding each input type, listing torrents, retrieving status, controlling lifecycle, and opening a torrent's folder. The service maps rqbit states into Torque's app-owned `queued`, `downloading`, `paused`, `completed`, and `error` states. Its DTOs also carry the metadata name, info hash, file list, progress, byte counts, transfer rates, connected peers when rqbit reports them, and a display-only output-folder name. The React queue polls the list and invokes actions through the typed bridge in `src/lib/desktop.ts`.
+`src-tauri/src/torrent/persistence.rs` stores a small versioned `application-state.json` beside the rqbit folder. It keeps info hashes, destination paths, last known states and progress, added/completed timestamps, the last selected output folder, and the `Resume unfinished downloads on launch` preference. Torrent payloads, magnets, and torrent file contents are not copied into this file. rqbit owns the session record, cached metainfo, and fast-resume bitfields; downloaded payload remains in the chosen download folder. The data directory is resolved by Tauri's `app_data_dir` for the current platform. The app-state JSON is therefore in that directory and rqbit data is under its `rqbit/` child.
 
-The frontend keeps polling, add-operation state, and per-torrent action feedback in `src/app/useTorrentQueue.ts`. `TorrentFilters` derives All, Downloading, Queued, Completed, Paused, and Errors views from the app-owned status. `TorrentRow` renders progress, the expanded file list, status, peers, transfer rates, and state-appropriate controls: pause, resume, retry, open folder, and remove.
+On startup rqbit restores its session before Torque reconciles app metadata by info hash. With the default resume preference enabled, paused unfinished torrents are started; when disabled, unfinished active torrents are paused. Completed status and completion timestamps are retained. If rqbit's session JSON is unreadable, Torque keeps a timestamped copy and attempts to restore known hashes from cached metainfo or a hash-only magnet. A torrent that still cannot be restored remains visible as an error row (or completed row when it was completed before) and can be removed from the list. An unavailable remembered folder falls back safely for new downloads; a missing per-torrent folder is recreated when possible, otherwise that torrent remains visible with its saved location and an error.
+
+`src-tauri/src/commands.rs` contains thin commands for folder selection, adding each input type, listing torrents, retrieving status and preferences, controlling lifecycle, and opening a torrent's folder. The service maps rqbit states into Torque's app-owned `queued`, `downloading`, `paused`, `completed`, and `error` states. Its DTOs also carry the metadata name, info hash, file list, progress, byte counts, transfer rates, connected peers when rqbit reports them, addition/completion timestamps, engine availability, and a display-only output-folder name. The React queue polls the list and invokes actions through the typed bridge in `src/lib/desktop.ts`.
+
+The frontend keeps polling, add-operation state, the startup-resume preference, and per-torrent action feedback in `src/app/useTorrentQueue.ts`. `TorrentFilters` derives All, Downloading, Queued, Completed, Paused, and Errors views from the app-owned status. `TorrentRow` renders progress, the expanded file list, status, peers, transfer rates, and state-appropriate controls: pause, resume, retry, open folder, and remove.
 
 Pause, resume, retry, and remove call rqbit only inside `TorrentService`; pause/resume/retry commands return refreshed status DTOs. Remove forgets the torrent in the session and keeps all downloaded files. Torque does not currently expose a delete-files action. Open folder accepts only a torrent ID; Rust resolves and validates that torrent's output directory before passing it to the Tauri opener plugin, so the frontend cannot ask the native opener to run an arbitrary command or open an arbitrary path.
 
@@ -119,6 +124,8 @@ Run service validation and local engine tests:
 ```sh
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
+
+The Rust tests include persistence recovery and an rqbit session restart with both unfinished and completed torrent entries.
 
 Build the desktop application and platform bundles:
 

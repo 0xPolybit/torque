@@ -54,7 +54,9 @@ export function TorrentRow({
   const actionBusy = pendingAction !== null;
 
   let primaryAction: { kind: TorrentControlAction; label: string; icon: typeof Pause; invoke: (id: number) => Promise<boolean> } | null = null;
-  if (torrent.state === "downloading") {
+  if (!torrent.engineAvailable) {
+    primaryAction = null;
+  } else if (torrent.state === "downloading") {
     primaryAction = { kind: "pause", label: "Pause", icon: Pause, invoke: onPause };
   } else if (torrent.state === "paused") {
     primaryAction = { kind: "resume", label: "Resume", icon: Play, invoke: onResume };

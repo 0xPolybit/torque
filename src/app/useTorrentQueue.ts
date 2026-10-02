@@ -6,6 +6,7 @@ import {
   discardTorrentFileSelection,
   describeError,
   getDownloadDirectories,
+  getAppPreferences,
   getTorrents,
   openTorrentFolder as openDesktopTorrentFolder,
   pauseTorrent as pauseDesktopTorrent,
@@ -14,6 +15,7 @@ import {
   retryTorrent as retryDesktopTorrent,
   selectDownloadDirectory,
   selectTorrentFile as selectNativeTorrentFile,
+  setResumeUnfinishedOnStartup,
   type TorrentActionState,
   type TorrentControlAction,
   type DownloadDirectory,
@@ -46,6 +48,8 @@ export function useTorrentQueue(enabled: boolean) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [selectingFile, setSelectingFile] = useState(false);
+  const [resumeOnStartup, setResumeOnStartup] = useState(true);
+  const [savingPreference, setSavingPreference] = useState(false);
   const [torrentActions, setTorrentActions] = useState<Record<number, TorrentActionState>>({});
 
   useEffect(() => {
@@ -79,6 +83,14 @@ export function useTorrentQueue(enabled: boolean) {
         if (active) setError(describeError(cause));
       });
 
+    getAppPreferences()
+      .then((preferences) => {
+        if (active) setResumeOnStartup(preferences.resumeUnfinishedOnStartup);
+      })
+      .catch((cause: unknown) => {
+        if (active) setError(describeError(cause));
+      });
+
     void refreshTorrents();
     const interval = window.setInterval(() => void refreshTorrents(), 2000);
 
@@ -100,6 +112,19 @@ export function useTorrentQueue(enabled: boolean) {
       setSelectedDirectoryId(directory.id);
     } catch (cause) {
       setError(describeError(cause));
+    }
+  }, []);
+
+  const updateResumeOnStartup = useCallback(async (enabled: boolean) => {
+    setSavingPreference(true);
+    setError("");
+    try {
+      const preferences = await setResumeUnfinishedOnStartup(enabled);
+      setResumeOnStartup(preferences.resumeUnfinishedOnStartup);
+    } catch (cause) {
+      setError(describeError(cause));
+    } finally {
+      setSavingPreference(false);
     }
   }, []);
 
@@ -202,6 +227,9 @@ export function useTorrentQueue(enabled: boolean) {
     setError,
     busy,
     selectingFile,
+    resumeOnStartup,
+    savingPreference,
+    updateResumeOnStartup,
     torrentActions,
     refreshTorrents,
     chooseDirectory,

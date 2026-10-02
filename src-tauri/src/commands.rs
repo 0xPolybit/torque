@@ -4,7 +4,9 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
-use crate::torrent::{DownloadDirectory, TorrentFileSelection, TorrentService, TorrentStatus};
+use crate::torrent::{
+    AppPreferences, DownloadDirectory, TorrentFileSelection, TorrentService, TorrentStatus,
+};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +32,21 @@ pub fn get_app_info(app: AppHandle) -> AppInfo {
         platform: std::env::consts::OS,
         default_download_directory: download_directory,
     }
+}
+
+#[tauri::command]
+pub fn get_app_preferences(service: State<'_, TorrentService>) -> Result<AppPreferences, String> {
+    service.preferences().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn set_resume_unfinished_on_startup(
+    service: State<'_, TorrentService>,
+    enabled: bool,
+) -> Result<AppPreferences, String> {
+    service
+        .set_resume_unfinished_on_startup(enabled)
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Serialize)]

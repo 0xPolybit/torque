@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -10,10 +11,12 @@ use librqbit::{
     AddTorrent, AddTorrentOptions, Api, Magnet, Session, SessionOptions, SessionPersistenceConfig,
     TorrentStats, TorrentStatsState,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 use uuid::Uuid;
+
+use super::persistence::{now_millis, AppPreferences, ApplicationPersistence};
 
 const MAX_TORRENT_FILE_SIZE: u64 = 64 * 1024 * 1024;
 
@@ -47,6 +50,10 @@ pub enum TorrentError {
     TorrentFileSelectionLock,
     #[error("The selected torrent file is no longer available. Choose it again.")]
     UnknownTorrentFileSelection,
+    #[error("Could not save application state: {0}")]
+    Persistence(String),
+    #[error("The application state could not be locked.")]
+    ApplicationStateLock,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -64,7 +71,7 @@ pub struct TorrentFileSelection {
     pub file_name: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TorrentState {
     Queued,
@@ -74,7 +81,7 @@ pub enum TorrentState {
     Error,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TorrentFile {
     pub name: String,
@@ -82,7 +89,7 @@ pub struct TorrentFile {
     pub included: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TorrentStatus {
     pub id: usize,
@@ -100,6 +107,9 @@ pub struct TorrentStatus {
     pub download_speed_bytes_per_second: u64,
     pub upload_speed_bytes_per_second: Option<u64>,
     pub connected_peers: Option<usize>,
+    pub added_at: u64,
+    pub completed_at: Option<u64>,
+    pub engine_available: bool,
 }
 
 pub struct TorrentService {
@@ -107,34 +117,66 @@ pub struct TorrentService {
     directories: Mutex<HashMap<String, PathBuf>>,
     torrent_file_selections: Mutex<HashMap<String, PathBuf>>,
     default_directory_id: String,
+    persistence: ApplicationPersistence,
+    missing_torrent_ids: Mutex<HashMap<usize, String>>,
 }
 
 impl TorrentService {
     pub async fn new(
         default_output_directory: PathBuf,
         persistence_directory: PathBuf,
+        application_state_path: PathBuf,
     ) -> Result<Self, TorrentError> {
-        fs::create_dir_all(&default_output_directory)
-            .map_err(|error| TorrentError::DownloadDirectory(error.to_string()))?;
+        let persistence = ApplicationPersistence::open(application_state_path);
+        let fallback_directory = persistence_directory
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("Downloads");
+        let default_output_directory = choose_default_directory(
+            persistence.last_download_directory(),
+            default_output_directory,
+            fallback_directory,
+            &persistence,
+        )?;
         fs::create_dir_all(&persistence_directory)
             .map_err(|error| TorrentError::Engine(error.to_string()))?;
+        preserve_invalid_engine_session(&persistence_directory);
 
         let options = SessionOptions {
             fastresume: true,
             persistence: Some(SessionPersistenceConfig::Json {
-                folder: Some(persistence_directory),
+                folder: Some(persistence_directory.clone()),
             }),
             ..SessionOptions::default()
         };
         let session = Session::new_with_opts(default_output_directory.clone(), options)
             .await
             .map_err(|error| TorrentError::Engine(error.to_string()))?;
-        Self::with_session(session, default_output_directory)
+        let service = Self::with_persistence(session, default_output_directory, persistence)?;
+        service
+            .restore_missing_torrents(&persistence_directory)
+            .await?;
+        service.apply_startup_resume_preference().await;
+        service.get_torrents()?;
+        Ok(service)
     }
 
+    #[cfg(test)]
     fn with_session(
         session: Arc<Session>,
         default_output_directory: PathBuf,
+    ) -> Result<Self, TorrentError> {
+        Self::with_persistence(
+            session,
+            default_output_directory,
+            ApplicationPersistence::in_memory(),
+        )
+    }
+
+    fn with_persistence(
+        session: Arc<Session>,
+        default_output_directory: PathBuf,
+        persistence: ApplicationPersistence,
     ) -> Result<Self, TorrentError> {
         let api = Api::new(session, None);
         let service = Self {
@@ -142,6 +184,8 @@ impl TorrentService {
             directories: Mutex::new(HashMap::new()),
             torrent_file_selections: Mutex::new(HashMap::new()),
             default_directory_id: Uuid::new_v4().to_string(),
+            persistence,
+            missing_torrent_ids: Mutex::new(HashMap::new()),
         };
 
         let canonical_directory = validate_directory(&default_output_directory)?;
@@ -188,7 +232,33 @@ impl TorrentService {
             .lock()
             .map_err(|_| TorrentError::DirectoryLock)?
             .insert(directory.id.clone(), path);
+        let selected_path = self
+            .directories
+            .lock()
+            .map_err(|_| TorrentError::DirectoryLock)?
+            .get(&directory.id)
+            .cloned()
+            .ok_or(TorrentError::UnknownDownloadDirectory)?;
+        self.persistence
+            .set_last_download_directory(selected_path)
+            .map_err(TorrentError::Persistence)?;
         Ok(directory)
+    }
+
+    pub fn preferences(&self) -> Result<AppPreferences, TorrentError> {
+        self.persistence
+            .preferences()
+            .map_err(TorrentError::Persistence)
+    }
+
+    pub fn set_resume_unfinished_on_startup(
+        &self,
+        enabled: bool,
+    ) -> Result<AppPreferences, TorrentError> {
+        self.persistence
+            .set_resume_unfinished_on_startup(enabled)
+            .map_err(TorrentError::Persistence)?;
+        self.preferences()
     }
 
     /// Retains a validated torrent file behind an opaque, single-use frontend ID.
@@ -354,10 +424,30 @@ impl TorrentService {
 
     /// Remove the session entry without deleting the downloaded data.
     pub async fn remove_torrent(&self, id: usize) -> Result<(), TorrentError> {
+        if let Some(info_hash) = self
+            .missing_torrent_ids
+            .lock()
+            .map_err(|_| TorrentError::ApplicationStateLock)?
+            .remove(&id)
+        {
+            self.persistence
+                .remove_torrent(&info_hash)
+                .map_err(TorrentError::Persistence)?;
+            return Ok(());
+        }
+        let info_hash = self
+            .get_torrent_status(id)
+            .ok()
+            .map(|status| status.info_hash);
         self.api
             .api_torrent_action_forget(TorrentIdOrHash::Id(id))
             .await
             .map_err(|error| TorrentError::Engine(error.to_string()))?;
+        if let Some(info_hash) = info_hash {
+            self.persistence
+                .remove_torrent(&info_hash)
+                .map_err(TorrentError::Persistence)?;
+        }
         Ok(())
     }
 
@@ -375,12 +465,48 @@ impl TorrentService {
         let listed = self
             .api
             .api_torrent_list_ext(ApiTorrentListOpts { with_stats: true });
-        listed
+        let mut torrents: Vec<_> = listed
             .torrents
             .into_iter()
             .filter_map(|torrent| torrent.id)
             .map(|id| self.get_torrent_status(id))
-            .collect()
+            .collect::<Result<_, _>>()?;
+
+        let actual_hashes: HashSet<_> = torrents
+            .iter()
+            .map(|torrent| torrent.info_hash.to_ascii_lowercase())
+            .collect();
+        let mut used_ids: HashSet<_> = torrents.iter().map(|torrent| torrent.id).collect();
+        let mut missing_ids = self
+            .missing_torrent_ids
+            .lock()
+            .map_err(|_| TorrentError::ApplicationStateLock)?;
+        missing_ids.clear();
+        for record in self
+            .persistence
+            .torrents()
+            .map_err(TorrentError::Persistence)?
+            .into_iter()
+            .filter(|record| !actual_hashes.contains(&record.info_hash.to_ascii_lowercase()))
+        {
+            let id = if used_ids.insert(record.id) {
+                record.id
+            } else {
+                let mut candidate = used_ids
+                    .iter()
+                    .copied()
+                    .max()
+                    .unwrap_or(0)
+                    .saturating_add(1);
+                while !used_ids.insert(candidate) {
+                    candidate = candidate.saturating_add(1);
+                }
+                candidate
+            };
+            missing_ids.insert(id, record.info_hash.clone());
+            torrents.push(record.fallback_status(id));
+        }
+        Ok(torrents)
     }
 
     pub fn get_torrent_status(&self, id: usize) -> Result<TorrentStatus, TorrentError> {
@@ -399,8 +525,147 @@ impl TorrentService {
             .api_peer_stats(torrent_id, Default::default())
             .ok()
             .map(|snapshot| snapshot.peers.len());
+        let output_path = PathBuf::from(&details.output_folder);
+        let mut status = status_from_parts(details, stats, connected_peers);
+        self.persistence
+            .update_torrent(&mut status, output_path)
+            .map_err(TorrentError::Persistence)?;
+        Ok(status)
+    }
 
-        Ok(status_from_parts(details, stats, connected_peers))
+    async fn restore_missing_torrents(
+        &self,
+        persistence_directory: &Path,
+    ) -> Result<(), TorrentError> {
+        let records = self
+            .persistence
+            .torrents()
+            .map_err(TorrentError::Persistence)?;
+        let known_hashes: HashSet<_> = self
+            .engine_info_hashes()
+            .into_iter()
+            .map(|hash| hash.to_ascii_lowercase())
+            .collect();
+        let resume = self.preferences()?.resume_unfinished_on_startup;
+
+        for record in records {
+            if known_hashes.contains(&record.info_hash.to_ascii_lowercase())
+                || !is_valid_info_hash(&record.info_hash)
+            {
+                continue;
+            }
+            if let Err(error) = fs::create_dir_all(&record.output_path) {
+                eprintln!(
+                    "Could not recreate saved download folder {}: {error}",
+                    record.output_path.display()
+                );
+                continue;
+            }
+            let source = cached_torrent_file(persistence_directory, &record.info_hash);
+            let add_torrent = match source.and_then(|path| fs::read(path).ok()) {
+                Some(bytes) if librqbit::torrent_from_bytes(&bytes).is_ok() => {
+                    AddTorrent::from_bytes(bytes)
+                }
+                _ => AddTorrent::from_url(format!("magnet:?xt=urn:btih:{}", record.info_hash)),
+            };
+            let options = AddTorrentOptions {
+                output_folder: Some(record.output_path.to_string_lossy().into_owned()),
+                paused: !resume,
+                ..AddTorrentOptions::default()
+            };
+            if let Err(error) = self.api.api_add_torrent(add_torrent, Some(options)).await {
+                eprintln!("Could not restore torrent {}: {error}", record.info_hash);
+            }
+        }
+        Ok(())
+    }
+
+    fn engine_info_hashes(&self) -> Vec<String> {
+        self.api
+            .api_torrent_list_ext(ApiTorrentListOpts { with_stats: false })
+            .torrents
+            .into_iter()
+            .filter_map(|torrent| torrent.id)
+            .filter_map(|id| {
+                self.api
+                    .api_torrent_details(TorrentIdOrHash::Id(id))
+                    .ok()
+                    .map(|details| details.info_hash)
+            })
+            .collect()
+    }
+
+    async fn apply_startup_resume_preference(&self) {
+        let resume = match self.preferences() {
+            Ok(preferences) => preferences.resume_unfinished_on_startup,
+            Err(error) => {
+                eprintln!("Could not load startup preference: {error}");
+                return;
+            }
+        };
+        for attempt in 0..10 {
+            let ids: Vec<_> = self
+                .api
+                .api_torrent_list_ext(ApiTorrentListOpts { with_stats: true })
+                .torrents
+                .into_iter()
+                .filter_map(|torrent| torrent.id)
+                .collect();
+            let mut pending_initialization = false;
+            for id in ids {
+                let Ok(status) = self.get_torrent_status(id) else {
+                    continue;
+                };
+                let should_start =
+                    resume && matches!(status.state, TorrentState::Paused | TorrentState::Queued);
+                let should_pause = !resume
+                    && matches!(
+                        status.state,
+                        TorrentState::Downloading | TorrentState::Queued
+                    );
+                if !should_start && !should_pause {
+                    continue;
+                }
+                let result = if should_start {
+                    self.api
+                        .api_torrent_action_start(TorrentIdOrHash::Id(id))
+                        .await
+                } else {
+                    self.api
+                        .api_torrent_action_pause(TorrentIdOrHash::Id(id))
+                        .await
+                };
+                match result {
+                    Ok(_) => {
+                        let still_unsettled = self
+                            .get_torrent_status(id)
+                            .map(|status| {
+                                if resume {
+                                    matches!(
+                                        status.state,
+                                        TorrentState::Paused | TorrentState::Queued
+                                    )
+                                } else {
+                                    matches!(
+                                        status.state,
+                                        TorrentState::Downloading | TorrentState::Queued
+                                    )
+                                }
+                            })
+                            .unwrap_or(false);
+                        pending_initialization |= still_unsettled;
+                    }
+                    Err(error) => {
+                        eprintln!("Could not apply startup preference to torrent {id}: {error}");
+                        pending_initialization = true;
+                    }
+                }
+            }
+            if !pending_initialization || attempt == 9 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
     }
 }
 
@@ -413,6 +678,102 @@ fn validate_directory(path: &Path) -> Result<PathBuf, TorrentError> {
         ));
     }
     Ok(canonical)
+}
+
+pub(super) fn choose_default_directory(
+    remembered: Option<PathBuf>,
+    system_default: PathBuf,
+    app_data_fallback: PathBuf,
+    persistence: &ApplicationPersistence,
+) -> Result<PathBuf, TorrentError> {
+    if let Some(path) = remembered {
+        if path.is_dir() {
+            if let Ok(path) = fs::canonicalize(path) {
+                return Ok(path);
+            }
+        }
+        persistence
+            .clear_last_download_directory()
+            .map_err(TorrentError::Persistence)?;
+    }
+
+    for candidate in [system_default, app_data_fallback] {
+        if fs::create_dir_all(&candidate).is_ok() {
+            if let Ok(canonical) = fs::canonicalize(&candidate) {
+                if canonical.is_dir() {
+                    return Ok(canonical);
+                }
+            }
+        }
+    }
+    Err(TorrentError::DownloadDirectory(
+        "neither the system Downloads folder nor the app data download folder is available"
+            .to_string(),
+    ))
+}
+
+#[derive(Deserialize)]
+struct EngineSessionFile {
+    torrents: HashMap<usize, EngineSessionTorrent>,
+}
+
+#[derive(Deserialize)]
+struct EngineSessionTorrent {
+    info_hash: String,
+    trackers: HashSet<String>,
+    output_folder: PathBuf,
+    only_files: Option<Vec<usize>>,
+    is_paused: bool,
+}
+
+fn preserve_invalid_engine_session(persistence_directory: &Path) {
+    let session_path = persistence_directory.join("session.json");
+    let bytes = match fs::read(&session_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            eprintln!("Could not inspect rqbit session state: {error}");
+            return;
+        }
+    };
+    let is_valid = serde_json::from_slice::<EngineSessionFile>(&bytes)
+        .map(|database| {
+            database.torrents.values().all(|torrent| {
+                let _ = (
+                    &torrent.trackers,
+                    &torrent.output_folder,
+                    &torrent.only_files,
+                    torrent.is_paused,
+                );
+                is_valid_info_hash(&torrent.info_hash)
+            })
+        })
+        .unwrap_or(false);
+    if is_valid {
+        return;
+    }
+    let backup = persistence_directory.join(format!("session.json.corrupt-{}", now_millis()));
+    match fs::rename(&session_path, &backup) {
+        Ok(()) => eprintln!(
+            "Moved unreadable rqbit session state to {}.",
+            backup.display()
+        ),
+        Err(error) => eprintln!("Could not preserve unreadable rqbit session state: {error}"),
+    }
+}
+
+fn is_valid_info_hash(info_hash: &str) -> bool {
+    info_hash.len() == 40 && info_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn cached_torrent_file(persistence_directory: &Path, info_hash: &str) -> Option<PathBuf> {
+    [
+        info_hash.to_ascii_lowercase(),
+        info_hash.to_ascii_uppercase(),
+    ]
+    .into_iter()
+    .map(|hash| persistence_directory.join(format!("{hash}.torrent")))
+    .find(|path| path.is_file())
 }
 
 fn directory_name(path: &Path) -> String {
@@ -531,6 +892,9 @@ fn status_from_parts(
         download_speed_bytes_per_second,
         upload_speed_bytes_per_second,
         connected_peers,
+        added_at: 0,
+        completed_at: None,
+        engine_available: true,
     }
 }
 
@@ -555,6 +919,7 @@ mod tests {
     };
 
     const ONE_BYTE_TORRENT: &[u8] = b"d4:infod6:lengthi1e4:name5:hello12:piece lengthi16384e6:pieces20:\x11\xf6\xad\x8e\xc5\x2a\x29\x84\xab\xaa\xfd\x7c\x3b\x51\x65\x03\x78\x5c\x20\x72ee";
+    const COMPLETE_TORRENT: &[u8] = b"d4:infod6:lengthi5e4:name5:world12:piece lengthi16384e6:pieces20:\x7c\x21\x14\x33\xf0\x20\x71\x59\x77\x41\xe6\xff\x5a\x8e\xa3\x47\x89\xab\xbf\x43ee";
 
     #[test]
     fn accepts_a_valid_magnet_and_rejects_invalid_inputs() {
@@ -791,5 +1156,164 @@ mod tests {
         assert_eq!(added.total_bytes, 1);
         assert_eq!(added.output_directory, "downloads");
         service.api.session().stop().await;
+    }
+
+    #[tokio::test]
+    async fn rqbit_session_and_application_metadata_survive_restart() {
+        let temp = tempfile::tempdir().expect("temporary test directory");
+        let default_directory = temp.path().join("downloads");
+        let selected_directory = temp.path().join("selected");
+        let rqbit_directory = temp.path().join("rqbit");
+        let app_state_path = temp.path().join("application-state.json");
+        fs::create_dir_all(&default_directory).expect("default download directory");
+        fs::create_dir_all(&selected_directory).expect("selected download directory");
+        fs::write(selected_directory.join("world"), b"world").expect("prepare completed data");
+
+        let session = Session::new_with_opts(
+            default_directory.clone(),
+            SessionOptions {
+                dht: None,
+                listen: None,
+                fastresume: true,
+                persistence: Some(SessionPersistenceConfig::Json {
+                    folder: Some(rqbit_directory.clone()),
+                }),
+                ..SessionOptions::default()
+            },
+        )
+        .await
+        .expect("create persistent test session");
+        let service = TorrentService::with_persistence(
+            session,
+            default_directory.clone(),
+            ApplicationPersistence::open(app_state_path.clone()),
+        )
+        .expect("create service with persistence");
+        let selected = service
+            .register_download_directory(selected_directory.clone())
+            .expect("remember selected folder");
+        let pending_path = temp.path().join("pending.torrent");
+        let completed_path = temp.path().join("completed.torrent");
+        fs::write(&pending_path, ONE_BYTE_TORRENT).expect("write pending metainfo");
+        fs::write(&completed_path, COMPLETE_TORRENT).expect("write completed metainfo");
+        let pending = service
+            .add_torrent_file(&pending_path, &selected.id)
+            .await
+            .expect("add unfinished torrent");
+        let pending = service
+            .pause_torrent(pending.id)
+            .await
+            .expect("pause unfinished torrent before restart");
+        let completed_response = service
+            .api
+            .api_add_torrent(
+                AddTorrent::from_bytes(fs::read(&completed_path).expect("read completed metainfo")),
+                Some(AddTorrentOptions {
+                    output_folder: Some(selected_directory.to_string_lossy().into_owned()),
+                    overwrite: true,
+                    ..AddTorrentOptions::default()
+                }),
+            )
+            .await
+            .expect("add completed torrent");
+        let completed_id = completed_response.id.expect("completed torrent id");
+        let mut completed = service
+            .get_torrent_status(completed_id)
+            .expect("read completed torrent status");
+        for _ in 0..50 {
+            if completed.state == TorrentState::Completed {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            completed = service
+                .get_torrent_status(completed_id)
+                .expect("check completed torrent");
+        }
+        assert_eq!(completed.state, TorrentState::Completed);
+        let pending_added_at = pending.added_at;
+        let completed_at = completed.completed_at;
+        service.api.session().stop().await;
+
+        let restored_session = Session::new_with_opts(
+            selected_directory.clone(),
+            SessionOptions {
+                dht: None,
+                listen: None,
+                fastresume: true,
+                persistence: Some(SessionPersistenceConfig::Json {
+                    folder: Some(rqbit_directory),
+                }),
+                ..SessionOptions::default()
+            },
+        )
+        .await
+        .expect("restore persistent test session");
+        let restored_service = TorrentService::with_persistence(
+            restored_session,
+            selected_directory.clone(),
+            ApplicationPersistence::open(app_state_path),
+        )
+        .expect("create restored service");
+        restored_service.apply_startup_resume_preference().await;
+        let mut restored = restored_service
+            .get_torrents()
+            .expect("retrieve restored queue");
+        let completed_id = restored
+            .iter()
+            .find(|torrent| torrent.info_hash == completed.info_hash)
+            .expect("completed torrent session entry")
+            .id;
+        for _ in 0..80 {
+            if restored.iter().any(|torrent| {
+                torrent.info_hash == completed.info_hash && torrent.state == TorrentState::Completed
+            }) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            restored = restored_service
+                .get_torrents()
+                .expect("refresh restored queue");
+        }
+
+        let restored_pending = restored
+            .iter()
+            .find(|torrent| torrent.info_hash == pending.info_hash)
+            .expect("unfinished torrent survives restart");
+        let restored_completed = restored
+            .iter()
+            .find(|torrent| torrent.info_hash == completed.info_hash)
+            .expect("completed torrent survives restart");
+        assert_eq!(restored_pending.added_at, pending_added_at);
+        assert_ne!(restored_pending.state, TorrentState::Paused);
+        assert_eq!(restored_completed.state, TorrentState::Completed);
+        assert_eq!(restored_completed.completed_at, completed_at);
+        assert_eq!(restored_completed.id, completed_id);
+        assert_eq!(
+            restored_service
+                .torrent_output_directory(restored_pending.id)
+                .expect("restored output folder"),
+            fs::canonicalize(selected_directory).expect("canonical selected folder")
+        );
+        restored_service.api.session().stop().await;
+    }
+
+    #[test]
+    fn malformed_rqbit_session_is_moved_aside_for_recovery() {
+        let temp = tempfile::tempdir().expect("temporary test directory");
+        let engine_directory = temp.path().join("rqbit");
+        fs::create_dir_all(&engine_directory).expect("create engine folder");
+        let session_path = engine_directory.join("session.json");
+        fs::write(&session_path, b"{broken").expect("write malformed session");
+
+        preserve_invalid_engine_session(&engine_directory);
+
+        assert!(!session_path.exists());
+        assert!(fs::read_dir(&engine_directory)
+            .expect("list engine state")
+            .any(|entry| entry
+                .expect("engine state entry")
+                .file_name()
+                .to_string_lossy()
+                .contains("session.json.corrupt-")));
     }
 }

@@ -14,9 +14,11 @@ pub fn run() {
                 .download_dir()
                 .or_else(|_| app.path().app_data_dir().map(|path| path.join("Downloads")))?;
             let persistence_directory = app.path().app_data_dir()?.join("rqbit");
+            let application_state_path = app.path().app_data_dir()?.join("application-state.json");
             let service = tauri::async_runtime::block_on(torrent::TorrentService::new(
                 default_output,
                 persistence_directory,
+                application_state_path,
             ))
             .map_err(|error| std::io::Error::other(error.to_string()))?;
             app.manage(service);
@@ -24,6 +26,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_app_info,
+            commands::get_app_preferences,
+            commands::set_resume_unfinished_on_startup,
             commands::get_download_directories,
             commands::select_download_directory,
             commands::select_torrent_file,

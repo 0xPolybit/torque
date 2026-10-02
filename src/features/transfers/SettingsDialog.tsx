@@ -1,12 +1,15 @@
 import { useEffect, useRef } from "react";
-import { Check, FolderDown, HardDrive, Monitor, X } from "lucide-react";
+import { Check, FolderDown, HardDrive, Monitor, Play, X } from "lucide-react";
 import type { AppInfo } from "../../lib/desktop";
 
 interface SettingsDialogProps {
   appInfo: AppInfo | null;
   downloadDirectoryName?: string;
   error?: string;
+  resumeOnStartup: boolean;
+  savingPreference: boolean;
   onChooseDirectory: () => Promise<void>;
+  onResumeOnStartupChange: (enabled: boolean) => Promise<void>;
   onClose: () => void;
 }
 
@@ -14,7 +17,10 @@ export function SettingsDialog({
   appInfo,
   downloadDirectoryName,
   error,
+  resumeOnStartup,
+  savingPreference,
   onChooseDirectory,
+  onResumeOnStartupChange,
   onClose,
 }: SettingsDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -66,8 +72,23 @@ export function SettingsDialog({
           </button>
         </div>
         <p className="settings-section__note">
-          This location is used for new downloads during this session. You can choose a different folder when adding a torrent.
+          New downloads use this folder. Your most recently selected folder is used again the next time Torque opens.
         </p>
+        <label className="settings-row settings-row--preference">
+          <span className="settings-row__icon" aria-hidden="true"><Play size={16} /></span>
+          <span className="settings-row__copy">
+            <strong>Resume unfinished downloads on launch</strong>
+            <span>Start unfinished torrents automatically when Torque opens.</span>
+          </span>
+          <input
+            className="settings-row__toggle"
+            type="checkbox"
+            checked={resumeOnStartup}
+            disabled={savingPreference}
+            onChange={(event) => void onResumeOnStartupChange(event.currentTarget.checked)}
+            aria-label="Resume unfinished downloads on launch"
+          />
+        </label>
         {error && <p className="settings-dialog__error" role="alert">{error}</p>}
       </section>
 

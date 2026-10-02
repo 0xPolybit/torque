@@ -122,7 +122,10 @@ export default function App() {
           appInfo={connection.state === "connected" ? connection.info : null}
           downloadDirectoryName={queue.selectedDirectory?.name}
           error={queue.error}
+          resumeOnStartup={queue.resumeOnStartup}
+          savingPreference={queue.savingPreference}
           onChooseDirectory={queue.chooseDirectory}
+          onResumeOnStartupChange={queue.updateResumeOnStartup}
           onClose={() => setShowSettings(false)}
         />
       )}
