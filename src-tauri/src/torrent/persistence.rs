@@ -13,16 +13,29 @@ use super::service::{TorrentState, TorrentStatus};
 
 const STATE_VERSION: u32 = 1;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemePreference {
+    System,
+    Dark,
+    Light,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(default)]
 pub struct AppPreferences {
     pub resume_unfinished_on_startup: bool,
+    pub start_downloads_automatically: bool,
+    pub theme: ThemePreference,
 }
 
 impl Default for AppPreferences {
     fn default() -> Self {
         Self {
             resume_unfinished_on_startup: true,
+            start_downloads_automatically: true,
+            theme: ThemePreference::Dark,
         }
     }
 }
@@ -190,12 +203,12 @@ impl ApplicationPersistence {
             .map_err(|_| "state lock poisoned".to_string())
     }
 
-    pub fn set_resume_unfinished_on_startup(&self, enabled: bool) -> Result<(), String> {
+    pub fn set_preferences(&self, preferences: AppPreferences) -> Result<(), String> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| "state lock poisoned".to_string())?;
-        state.preferences.resume_unfinished_on_startup = enabled;
+        state.preferences = preferences;
         self.write_locked(&state)
     }
 
@@ -367,6 +380,9 @@ mod tests {
                 .expect("default preferences")
                 .resume_unfinished_on_startup
         );
+        let defaults = persistence.preferences().expect("default preferences");
+        assert!(defaults.start_downloads_automatically);
+        assert_eq!(defaults.theme, ThemePreference::Dark);
         assert!(!path.exists());
         assert!(fs::read_dir(temp.path())
             .expect("list state files")
@@ -389,18 +405,38 @@ mod tests {
             .set_last_download_directory(folder.clone())
             .expect("save selected folder");
         persistence
-            .set_resume_unfinished_on_startup(false)
+            .set_preferences(AppPreferences {
+                resume_unfinished_on_startup: false,
+                start_downloads_automatically: false,
+                theme: ThemePreference::Light,
+            })
             .expect("save preference");
         drop(persistence);
 
         let restored = ApplicationPersistence::open(path);
         assert_eq!(restored.last_download_directory(), Some(folder));
-        assert!(
-            !restored
-                .preferences()
-                .expect("restored preferences")
-                .resume_unfinished_on_startup
-        );
+        let preferences = restored.preferences().expect("restored preferences");
+        assert!(!preferences.resume_unfinished_on_startup);
+        assert!(!preferences.start_downloads_automatically);
+        assert_eq!(preferences.theme, ThemePreference::Light);
+    }
+
+    #[test]
+    fn older_preference_documents_receive_new_defaults() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let path = temp.path().join("application-state.json");
+        fs::write(
+            &path,
+            br#"{"version":1,"preferences":{"resumeUnfinishedOnStartup":false}}"#,
+        )
+        .expect("write legacy preferences");
+
+        let persistence = ApplicationPersistence::open(path);
+        let preferences = persistence.preferences().expect("legacy preferences");
+
+        assert!(!preferences.resume_unfinished_on_startup);
+        assert!(preferences.start_downloads_automatically);
+        assert_eq!(preferences.theme, ThemePreference::Dark);
     }
 
     #[test]

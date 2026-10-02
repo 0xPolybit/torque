@@ -9,6 +9,7 @@ interface AddTorrentDialogProps {
   selectedDirectory?: DownloadDirectory;
   error: string;
   busy: boolean;
+  selectingDirectory: boolean;
   selectingFile: boolean;
   onClose: () => void;
   onSelectDirectory: () => Promise<void>;
@@ -23,6 +24,7 @@ export function AddTorrentDialog({
   selectedDirectory,
   error,
   busy,
+  selectingDirectory,
   selectingFile,
   onClose,
   onSelectDirectory,
@@ -49,7 +51,7 @@ export function AddTorrentDialog({
     };
   }, []);
 
-  const locked = busy || selectingFile;
+  const locked = busy || selectingFile || selectingDirectory;
 
   async function close() {
     if (locked) return;
@@ -127,7 +129,7 @@ export function AddTorrentDialog({
         if (event.target === dialogRef.current) void close();
       }}
     >
-      <form className="add-dialog__content" onSubmit={(event) => void submit(event)} noValidate>
+      <form className="add-dialog__content" onSubmit={(event) => void submit(event)} noValidate aria-busy={locked}>
         <div className="add-dialog__header">
           <div>
             <h2 id="add-dialog-title">Add a torrent</h2>
@@ -138,14 +140,14 @@ export function AddTorrentDialog({
           </button>
         </div>
 
-        <div className="add-dialog__tabs" role="tablist" aria-label="Torrent source">
-          <button className={kind === "magnet" ? "is-selected" : ""} role="tab" aria-selected={kind === "magnet"} type="button" disabled={locked} onClick={() => changeKind("magnet")}>
+        <div className="add-dialog__tabs" role="group" aria-label="Torrent source">
+          <button className={kind === "magnet" ? "is-selected" : ""} aria-pressed={kind === "magnet"} type="button" disabled={locked} onClick={() => changeKind("magnet")}>
             <Magnet size={15} aria-hidden="true" /> Magnet link
           </button>
-          <button className={kind === "file" ? "is-selected" : ""} role="tab" aria-selected={kind === "file"} type="button" disabled={locked} onClick={() => changeKind("file")}>
+          <button className={kind === "file" ? "is-selected" : ""} aria-pressed={kind === "file"} type="button" disabled={locked} onClick={() => changeKind("file")}>
             <FileUp size={15} aria-hidden="true" /> Torrent file
           </button>
-          <button className={kind === "url" ? "is-selected" : ""} role="tab" aria-selected={kind === "url"} type="button" disabled={locked} onClick={() => changeKind("url")}>
+          <button className={kind === "url" ? "is-selected" : ""} aria-pressed={kind === "url"} type="button" disabled={locked} onClick={() => changeKind("url")}>
             <Link2 size={15} aria-hidden="true" /> Torrent URL
           </button>
         </div>
@@ -193,7 +195,7 @@ export function AddTorrentDialog({
             <div className={`add-dialog__file-select${fileSelection ? " has-file" : ""}`}>
               <div className="add-dialog__file-icon" aria-hidden="true"><FileUp size={20} strokeWidth={1.7} /></div>
               <div className="add-dialog__file-info">
-                <strong>{fileSelection?.fileName ?? "Select a torrent file"}</strong>
+                <strong title={fileSelection?.fileName}>{fileSelection?.fileName ?? "Select a torrent file"}</strong>
                 <span>{fileSelection ? "File checked and ready to add" : "Choose a .torrent file from your computer"}</span>
               </div>
               <button className="secondary-button" type="button" disabled={locked} onClick={() => void chooseFile()}>
@@ -215,7 +217,7 @@ export function AddTorrentDialog({
             </span>
           </div>
           <button className="text-button" type="button" disabled={locked} onClick={() => { setDirectoryError(""); void onSelectDirectory(); }}>
-            Change folder
+            {selectingDirectory ? "Choosing…" : "Change folder"}
           </button>
         </div>
         {directoryError && <p className="add-dialog__field-error add-dialog__directory-error" role="alert">{directoryError}</p>}

@@ -27,7 +27,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_app_info,
             commands::get_app_preferences,
-            commands::set_resume_unfinished_on_startup,
+            commands::set_app_preferences,
             commands::get_download_directories,
             commands::select_download_directory,
             commands::select_torrent_file,

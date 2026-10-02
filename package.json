@@ -1,5 +1,6 @@
 {
   "name": "torque",
+  "description": "A cross-platform desktop torrent downloader built with Tauri 2.",
   "private": true,
   "version": "0.1.0",
   "type": "module",

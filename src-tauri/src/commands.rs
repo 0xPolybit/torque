@@ -40,12 +40,12 @@ pub fn get_app_preferences(service: State<'_, TorrentService>) -> Result<AppPref
 }
 
 #[tauri::command]
-pub fn set_resume_unfinished_on_startup(
+pub fn set_app_preferences(
     service: State<'_, TorrentService>,
-    enabled: bool,
+    preferences: AppPreferences,
 ) -> Result<AppPreferences, String> {
     service
-        .set_resume_unfinished_on_startup(enabled)
+        .set_preferences(preferences)
         .map_err(|error| error.to_string())
 }
 

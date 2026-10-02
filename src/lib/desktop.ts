@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export interface AppInfo {
   name: string;
@@ -7,8 +8,12 @@ export interface AppInfo {
   defaultDownloadDirectory: string | null;
 }
 
+export type ThemePreference = "system" | "dark" | "light";
+
 export interface AppPreferences {
   resumeUnfinishedOnStartup: boolean;
+  startDownloadsAutomatically: boolean;
+  theme: ThemePreference;
 }
 
 export interface DownloadDirectory {
@@ -70,8 +75,12 @@ export function getAppPreferences(): Promise<AppPreferences> {
   return invoke<AppPreferences>("get_app_preferences");
 }
 
-export function setResumeUnfinishedOnStartup(enabled: boolean): Promise<AppPreferences> {
-  return invoke<AppPreferences>("set_resume_unfinished_on_startup", { enabled });
+export function setAppPreferences(preferences: AppPreferences): Promise<AppPreferences> {
+  return invoke<AppPreferences>("set_app_preferences", { preferences });
+}
+
+export function setWindowTheme(theme: ThemePreference): Promise<void> {
+  return getCurrentWindow().setTheme(theme === "system" ? null : theme);
 }
 
 export function getDownloadDirectories(): Promise<DownloadDirectoryList> {

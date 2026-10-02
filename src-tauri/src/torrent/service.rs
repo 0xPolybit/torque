@@ -251,12 +251,12 @@ impl TorrentService {
             .map_err(TorrentError::Persistence)
     }
 
-    pub fn set_resume_unfinished_on_startup(
+    pub fn set_preferences(
         &self,
-        enabled: bool,
+        preferences: AppPreferences,
     ) -> Result<AppPreferences, TorrentError> {
         self.persistence
-            .set_resume_unfinished_on_startup(enabled)
+            .set_preferences(preferences)
             .map_err(TorrentError::Persistence)?;
         self.preferences()
     }
@@ -341,11 +341,12 @@ impl TorrentService {
         let trimmed = validate_magnet(magnet_link)?;
 
         let output_directory = self.validate_output_directory(directory_id)?;
+        let start_automatically = self.preferences()?.start_downloads_automatically;
         let response = self
             .api
             .api_add_torrent(
                 AddTorrent::from_url(trimmed),
-                Some(add_options(&output_directory)),
+                Some(add_options(&output_directory, start_automatically)),
             )
             .await
             .map_err(|error| TorrentError::Engine(error.to_string()))?;
@@ -362,11 +363,12 @@ impl TorrentService {
     ) -> Result<TorrentStatus, TorrentError> {
         let normalized_url = validate_torrent_url(torrent_url)?;
         let output_directory = self.validate_output_directory(directory_id)?;
+        let start_automatically = self.preferences()?.start_downloads_automatically;
         let response = self
             .api
             .api_add_torrent(
                 AddTorrent::from_url(normalized_url.as_str()),
-                Some(add_options(&output_directory)),
+                Some(add_options(&output_directory, start_automatically)),
             )
             .await
             .map_err(|error| TorrentError::Engine(error.to_string()))?;
@@ -384,11 +386,12 @@ impl TorrentService {
         let bytes = read_torrent_file(torrent_path)?;
 
         let output_directory = self.validate_output_directory(directory_id)?;
+        let start_automatically = self.preferences()?.start_downloads_automatically;
         let response = self
             .api
             .api_add_torrent(
                 AddTorrent::from_bytes(bytes),
-                Some(add_options(&output_directory)),
+                Some(add_options(&output_directory, start_automatically)),
             )
             .await
             .map_err(|error| TorrentError::Engine(error.to_string()))?;
@@ -838,9 +841,10 @@ fn validate_magnet(input: &str) -> Result<&str, TorrentError> {
     Ok(trimmed)
 }
 
-fn add_options(output_directory: &Path) -> AddTorrentOptions {
+fn add_options(output_directory: &Path, start_automatically: bool) -> AddTorrentOptions {
     AddTorrentOptions {
         output_folder: Some(output_directory.to_string_lossy().into_owned()),
+        paused: !start_automatically,
         ..AddTorrentOptions::default()
     }
 }
@@ -970,11 +974,13 @@ mod tests {
 
     #[test]
     fn add_options_use_the_selected_output_directory() {
-        let options = add_options(Path::new("C:/downloads/selected"));
+        let options = add_options(Path::new("C:/downloads/selected"), true);
         assert_eq!(
             options.output_folder.as_deref(),
             Some("C:/downloads/selected")
         );
+        assert!(!options.paused);
+        assert!(add_options(Path::new("C:/downloads/selected"), false).paused);
     }
 
     #[test]

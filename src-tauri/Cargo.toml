@@ -1,7 +1,7 @@
 [package]
 name = "torque"
 version = "0.1.0"
-description = "A focused desktop home for torrent transfers"
+description = "A cross-platform desktop torrent downloader built with Tauri 2"
 authors = ["Torque contributors"]
 edition = "2021"
 rust-version = "1.90"

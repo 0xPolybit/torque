@@ -30,7 +30,7 @@ export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "—";
   if (bytes < 1024) return `${bytes} B`;
 
-  const units = ["KB", "MB", "GB", "TB", "PB"];
+  const units = ["KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
   let value = bytes / 1024;
   let unit = 0;
   while (value >= 1024 && unit < units.length - 1) {
@@ -41,19 +41,24 @@ export function formatBytes(bytes: number): string {
 }
 
 export function formatSpeed(bytesPerSecond: number | null): string {
-  return bytesPerSecond === null ? "—" : `${formatBytes(bytesPerSecond)}/s`;
+  return bytesPerSecond === null || !Number.isFinite(bytesPerSecond) || bytesPerSecond < 0
+    ? "—"
+    : `${formatBytes(bytesPerSecond)}/s`;
 }
 
 export function estimateTimeRemaining(torrent: TorrentStatus): string | null {
-  if (torrent.state !== "downloading" || torrent.downloadSpeedBytesPerSecond <= 0) return null;
+  const speed = torrent.downloadSpeedBytesPerSecond;
+  if (torrent.state !== "downloading" || !Number.isFinite(speed) || speed <= 0) return null;
   const remaining = Math.max(0, torrent.totalBytes - torrent.downloadedBytes);
-  if (remaining === 0) return null;
+  if (!Number.isFinite(remaining) || remaining === 0) return null;
 
-  const seconds = Math.ceil(remaining / torrent.downloadSpeedBytesPerSecond);
-  const days = Math.floor(seconds / 86_400);
+  const seconds = Math.ceil(remaining / speed);
+  const years = Math.floor(seconds / 31_536_000);
+  const days = Math.floor((seconds % 31_536_000) / 86_400);
   const hours = Math.floor((seconds % 86_400) / 3_600);
   const minutes = Math.floor((seconds % 3_600) / 60);
 
+  if (years > 0) return `${years}y ${days}d`;
   if (days > 0) return `${days}d ${hours}h`;
   if (hours > 0) return `${hours}h ${minutes}m`;
   if (minutes > 0) return `${minutes}m`;

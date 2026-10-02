@@ -15,7 +15,9 @@ import {
   retryTorrent as retryDesktopTorrent,
   selectDownloadDirectory,
   selectTorrentFile as selectNativeTorrentFile,
-  setResumeUnfinishedOnStartup,
+  setAppPreferences,
+  setWindowTheme,
+  type AppPreferences,
   type TorrentActionState,
   type TorrentControlAction,
   type DownloadDirectory,
@@ -43,14 +45,23 @@ function rememberDirectoryId(id: string): void {
 
 export function useTorrentQueue(enabled: boolean) {
   const [torrents, setTorrents] = useState<TorrentStatus[]>([]);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [directories, setDirectories] = useState<DownloadDirectory[]>([]);
   const [selectedDirectoryId, setSelectedDirectoryId] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [selectingDirectory, setSelectingDirectory] = useState(false);
   const [selectingFile, setSelectingFile] = useState(false);
-  const [resumeOnStartup, setResumeOnStartup] = useState(true);
+  const [preferences, setPreferences] = useState<AppPreferences>({
+    resumeUnfinishedOnStartup: true,
+    startDownloadsAutomatically: true,
+    theme: "dark",
+  });
+  const [preferencesLoaded, setPreferencesLoaded] = useState(false);
   const [savingPreference, setSavingPreference] = useState(false);
   const [torrentActions, setTorrentActions] = useState<Record<number, TorrentActionState>>({});
+  const [toast, setToast] = useState<{ id: number; message: string } | null>(null);
+  const dismissToast = useCallback(() => setToast(null), []);
 
   useEffect(() => {
     if (selectedDirectoryId) rememberDirectoryId(selectedDirectoryId);
@@ -62,6 +73,8 @@ export function useTorrentQueue(enabled: boolean) {
       setError("");
     } catch (cause) {
       setError(describeError(cause));
+    } finally {
+      setInitialLoading(false);
     }
   }, []);
 
@@ -85,10 +98,17 @@ export function useTorrentQueue(enabled: boolean) {
 
     getAppPreferences()
       .then((preferences) => {
-        if (active) setResumeOnStartup(preferences.resumeUnfinishedOnStartup);
+        if (!active) return;
+        setPreferences(preferences);
+        return setWindowTheme(preferences.theme).catch((cause: unknown) => {
+          if (active) setError(`Could not apply the saved theme: ${describeError(cause)}`);
+        });
       })
       .catch((cause: unknown) => {
         if (active) setError(describeError(cause));
+      })
+      .finally(() => {
+        if (active) setPreferencesLoaded(true);
       });
 
     void refreshTorrents();
@@ -101,7 +121,9 @@ export function useTorrentQueue(enabled: boolean) {
   }, [enabled, refreshTorrents]);
 
   const chooseDirectory = useCallback(async () => {
+    if (selectingDirectory) return;
     setError("");
+    setSelectingDirectory(true);
     try {
       const directory = await selectDownloadDirectory();
       if (!directory) return;
@@ -112,21 +134,28 @@ export function useTorrentQueue(enabled: boolean) {
       setSelectedDirectoryId(directory.id);
     } catch (cause) {
       setError(describeError(cause));
+    } finally {
+      setSelectingDirectory(false);
     }
-  }, []);
+  }, [selectingDirectory]);
 
-  const updateResumeOnStartup = useCallback(async (enabled: boolean) => {
+  const updatePreferences = useCallback(async (changes: Partial<AppPreferences>) => {
     setSavingPreference(true);
     setError("");
     try {
-      const preferences = await setResumeUnfinishedOnStartup(enabled);
-      setResumeOnStartup(preferences.resumeUnfinishedOnStartup);
+      const saved = await setAppPreferences({ ...preferences, ...changes });
+      setPreferences(saved);
+      try {
+        await setWindowTheme(saved.theme);
+      } catch (cause) {
+        setError(`Settings were saved, but the window could not apply the theme: ${describeError(cause)}`);
+      }
     } catch (cause) {
       setError(describeError(cause));
     } finally {
       setSavingPreference(false);
     }
-  }, []);
+  }, [preferences]);
 
   const chooseTorrentFile = useCallback(async (): Promise<TorrentFileSelection | null> => {
     setError("");
@@ -164,6 +193,7 @@ export function useTorrentQueue(enabled: boolean) {
             added,
             ...current.filter((torrent) => torrent.id !== added.id),
           ]);
+          setToast({ id: Date.now(), message: "Torrent added to your downloads." });
         }
         await refreshTorrents();
         return Boolean(added);
@@ -198,6 +228,15 @@ export function useTorrentQueue(enabled: boolean) {
           setTorrents((current) => current.filter((torrent) => torrent.id !== torrentId));
           await refreshTorrents();
         }
+        const successMessages: Partial<Record<TorrentControlAction, string>> = {
+          pause: "Download paused.",
+          resume: "Download resumed.",
+          retry: "Retry started.",
+          remove: "Removed from Torque. Downloaded files were kept.",
+        };
+        if (successMessages[action]) {
+          setToast({ id: Date.now(), message: successMessages[action]! });
+        }
         return true;
       } catch (cause) {
         setTorrentActions((current) => ({
@@ -220,18 +259,23 @@ export function useTorrentQueue(enabled: boolean) {
 
   return {
     torrents,
+    initialLoading,
     directories,
     selectedDirectoryId,
     selectedDirectory: directories.find((item) => item.id === selectedDirectoryId),
     error,
     setError,
     busy,
+    selectingDirectory,
     selectingFile,
-    resumeOnStartup,
+    preferences,
+    preferencesLoaded,
     savingPreference,
-    updateResumeOnStartup,
+    updatePreferences,
     torrentActions,
     refreshTorrents,
+    toast,
+    dismissToast,
     chooseDirectory,
     chooseTorrentFile,
     discardTorrentFile,
