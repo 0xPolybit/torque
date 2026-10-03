@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  addMagnet,
-  addTorrentFile,
-  addTorrentUrl,
+  discardTorrentPreview as discardDesktopTorrentPreview,
   discardTorrentFileSelection,
   describeError,
   getDownloadDirectories,
   getAppPreferences,
   getTorrents,
+  inspectMagnet as inspectDesktopMagnet,
+  inspectTorrentFile as inspectDesktopTorrentFile,
+  inspectTorrentUrl as inspectDesktopTorrentUrl,
   openTorrentFolder as openDesktopTorrentFolder,
   pauseTorrent as pauseDesktopTorrent,
   removeTorrent as removeDesktopTorrent,
@@ -17,12 +18,14 @@ import {
   selectTorrentFile as selectNativeTorrentFile,
   setAppPreferences,
   setWindowTheme,
+  startInspectedTorrent as startDesktopInspectedTorrent,
   type AppPreferences,
   type TorrentActionState,
   type TorrentControlAction,
   type DownloadDirectory,
   type TorrentFileSelection,
   type TorrentStatus,
+  type TorrentPreview,
 } from "../lib/desktop";
 
 const LAST_DOWNLOAD_DIRECTORY_KEY = "torque:last-download-directory-id";
@@ -50,6 +53,7 @@ export function useTorrentQueue(enabled: boolean) {
   const [selectedDirectoryId, setSelectedDirectoryId] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [inspectingMetadata, setInspectingMetadata] = useState(false);
   const [selectingDirectory, setSelectingDirectory] = useState(false);
   const [selectingFile, setSelectingFile] = useState(false);
   const [preferences, setPreferences] = useState<AppPreferences>({
@@ -178,6 +182,33 @@ export function useTorrentQueue(enabled: boolean) {
     }
   }, []);
 
+  const inspect = useCallback(async (
+    operation: () => Promise<TorrentPreview>,
+  ): Promise<TorrentPreview | null> => {
+    if (!selectedDirectoryId) {
+      setError("Choose a download folder before inspecting a torrent.");
+      return null;
+    }
+    setInspectingMetadata(true);
+    setError("");
+    try {
+      return await operation();
+    } catch (cause) {
+      setError(describeError(cause));
+      return null;
+    } finally {
+      setInspectingMetadata(false);
+    }
+  }, [selectedDirectoryId]);
+
+  const discardPreview = useCallback(async (previewId: string) => {
+    try {
+      await discardDesktopTorrentPreview(previewId);
+    } catch (cause) {
+      setError(describeError(cause));
+    }
+  }, []);
+
   const add = useCallback(
     async (operation: () => Promise<TorrentStatus | null>) => {
       if (!selectedDirectoryId) {
@@ -268,6 +299,7 @@ export function useTorrentQueue(enabled: boolean) {
     busy,
     selectingDirectory,
     selectingFile,
+    inspectingMetadata,
     preferences,
     preferencesLoaded,
     savingPreference,
@@ -289,11 +321,14 @@ export function useTorrentQueue(enabled: boolean) {
       runTorrentAction(torrentId, "remove", () => removeDesktopTorrent(torrentId)),
     openTorrentFolder: (torrentId: number) =>
       runTorrentAction(torrentId, "open-folder", () => openDesktopTorrentFolder(torrentId)),
-    addMagnet: (link: string) =>
-      add(() => addMagnet(link, selectedDirectoryId)),
-    addTorrentUrl: (url: string) =>
-      add(() => addTorrentUrl(url, selectedDirectoryId)),
-    addTorrentFile: (torrentFileId: string) =>
-      add(() => addTorrentFile(torrentFileId, selectedDirectoryId)),
+    inspectMagnet: (link: string) =>
+      inspect(() => inspectDesktopMagnet(link, selectedDirectoryId)),
+    inspectTorrentUrl: (url: string) =>
+      inspect(() => inspectDesktopTorrentUrl(url, selectedDirectoryId)),
+    inspectTorrentFile: (torrentFileId: string) =>
+      inspect(() => inspectDesktopTorrentFile(torrentFileId, selectedDirectoryId)),
+    discardTorrentPreview: discardPreview,
+    startInspectedTorrent: (previewId: string, fileIndices: number[]) =>
+      add(() => startDesktopInspectedTorrent(previewId, selectedDirectoryId, fileIndices)),
   };
 }

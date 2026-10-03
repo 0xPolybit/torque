@@ -6,6 +6,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use bytes::Bytes;
 use librqbit::{
     api::{ApiTorrentListOpts, TorrentIdOrHash},
     AddTorrent, AddTorrentOptions, Api, Magnet, Session, SessionOptions, SessionPersistenceConfig,
@@ -42,6 +43,8 @@ pub enum TorrentError {
     InvalidTorrentMetadata(String),
     #[error("Torrent engine error: {0}")]
     Engine(String),
+    #[error("Could not fetch torrent metadata: {0}")]
+    MetadataResolution(String),
     #[error("Torrent status error: {0}")]
     Status(String),
     #[error("The download service could not lock its directory list.")]
@@ -50,6 +53,20 @@ pub enum TorrentError {
     TorrentFileSelectionLock,
     #[error("The selected torrent file is no longer available. Choose it again.")]
     UnknownTorrentFileSelection,
+    #[error("Could not lock torrent previews.")]
+    PreviewLock,
+    #[error("The torrent preview expired. Inspect the source again.")]
+    UnknownTorrentPreview,
+    #[error("Select at least one file to download.")]
+    NoFilesSelected,
+    #[error("The selected files do not match this torrent preview. Inspect it again.")]
+    InvalidFileSelection,
+    #[error("Torrent metadata is larger than the 64 MiB limit.")]
+    TorrentMetadataTooLarge,
+    #[error(
+        "The torrent engine unexpectedly started a download during inspection; it was paused."
+    )]
+    InspectionStartedTorrent,
     #[error("Could not save application state: {0}")]
     Persistence(String),
     #[error("The application state could not be locked.")]
@@ -69,6 +86,47 @@ pub struct DownloadDirectory {
 pub struct TorrentFileSelection {
     pub id: String,
     pub file_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TorrentPreviewFile {
+    pub index: usize,
+    pub path: String,
+    pub filename: String,
+    pub size_bytes: String,
+    pub extension: Option<String>,
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TorrentPreview {
+    pub preview_id: String,
+    pub name: String,
+    pub info_hash: String,
+    pub total_size: String,
+    pub piece_count: u32,
+    pub trackers: Vec<String>,
+    pub is_private: bool,
+    pub files: Vec<TorrentPreviewFile>,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedTorrentPreview {
+    metainfo: Bytes,
+    info_hash: String,
+    file_count: usize,
+}
+
+struct PreviewMetadata {
+    name: String,
+    info_hash: String,
+    total_size: u64,
+    piece_count: u32,
+    trackers: Vec<String>,
+    is_private: bool,
+    files: Vec<TorrentPreviewFile>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,8 +172,10 @@ pub struct TorrentStatus {
 
 pub struct TorrentService {
     api: Api,
+    session: Arc<Session>,
     directories: Mutex<HashMap<String, PathBuf>>,
     torrent_file_selections: Mutex<HashMap<String, PathBuf>>,
+    torrent_previews: Mutex<HashMap<String, PreparedTorrentPreview>>,
     default_directory_id: String,
     persistence: ApplicationPersistence,
     missing_torrent_ids: Mutex<HashMap<usize, String>>,
@@ -178,11 +238,13 @@ impl TorrentService {
         default_output_directory: PathBuf,
         persistence: ApplicationPersistence,
     ) -> Result<Self, TorrentError> {
-        let api = Api::new(session, None);
+        let api = Api::new(Arc::clone(&session), None);
         let service = Self {
             api,
+            session,
             directories: Mutex::new(HashMap::new()),
             torrent_file_selections: Mutex::new(HashMap::new()),
+            torrent_previews: Mutex::new(HashMap::new()),
             default_directory_id: Uuid::new_v4().to_string(),
             persistence,
             missing_torrent_ids: Mutex::new(HashMap::new()),
@@ -285,11 +347,48 @@ impl TorrentService {
         Ok(selection)
     }
 
-    pub async fn add_selected_torrent_file(
+    pub fn discard_torrent_file_selection(&self, selection_id: &str) -> Result<(), TorrentError> {
+        self.torrent_file_selections
+            .lock()
+            .map_err(|_| TorrentError::TorrentFileSelectionLock)?
+            .remove(selection_id);
+        Ok(())
+    }
+
+    pub async fn inspect_magnet(
+        &self,
+        magnet_link: &str,
+        directory_id: &str,
+    ) -> Result<TorrentPreview, TorrentError> {
+        let magnet_link = validate_magnet(magnet_link)?.to_owned();
+        let output_directory = self.validate_output_directory(directory_id)?;
+        self.inspect_source(
+            AddTorrent::from_url(magnet_link.as_str()),
+            &output_directory,
+        )
+        .await
+    }
+
+    pub async fn inspect_torrent_url(
+        &self,
+        torrent_url: &str,
+        directory_id: &str,
+    ) -> Result<TorrentPreview, TorrentError> {
+        let torrent_url = validate_torrent_url(torrent_url)?.to_string();
+        let output_directory = self.validate_output_directory(directory_id)?;
+        self.inspect_source(
+            AddTorrent::from_url(torrent_url.as_str()),
+            &output_directory,
+        )
+        .await
+    }
+
+    pub async fn inspect_selected_torrent_file(
         &self,
         selection_id: &str,
         directory_id: &str,
-    ) -> Result<TorrentStatus, TorrentError> {
+    ) -> Result<TorrentPreview, TorrentError> {
+        let output_directory = self.validate_output_directory(directory_id)?;
         let torrent_path = self
             .torrent_file_selections
             .lock()
@@ -297,24 +396,169 @@ impl TorrentService {
             .remove(selection_id)
             .ok_or(TorrentError::UnknownTorrentFileSelection)?;
 
-        match self.add_torrent_file(&torrent_path, directory_id).await {
-            Ok(status) => Ok(status),
-            Err(error) => {
-                self.torrent_file_selections
-                    .lock()
-                    .map_err(|_| TorrentError::TorrentFileSelectionLock)?
-                    .insert(selection_id.to_string(), torrent_path);
-                Err(error)
+        let result = match read_torrent_file(&torrent_path) {
+            Ok(bytes) => {
+                self.inspect_source(AddTorrent::from_bytes(bytes), &output_directory)
+                    .await
             }
+            Err(error) => Err(error),
+        };
+
+        if result.is_err() {
+            self.torrent_file_selections
+                .lock()
+                .map_err(|_| TorrentError::TorrentFileSelectionLock)?
+                .insert(selection_id.to_string(), torrent_path);
         }
+        result
     }
 
-    pub fn discard_torrent_file_selection(&self, selection_id: &str) -> Result<(), TorrentError> {
-        self.torrent_file_selections
+    async fn inspect_source(
+        &self,
+        source: AddTorrent<'_>,
+        output_directory: &Path,
+    ) -> Result<TorrentPreview, TorrentError> {
+        self.inspect_source_with_options(source, inspection_options(output_directory))
+            .await
+    }
+
+    async fn inspect_source_with_options(
+        &self,
+        source: AddTorrent<'_>,
+        options: AddTorrentOptions,
+    ) -> Result<TorrentPreview, TorrentError> {
+        let response = self
+            .session
+            .add_torrent(source, Some(options))
+            .await
+            .map_err(|error| TorrentError::MetadataResolution(error.to_string()))?;
+
+        let (metadata, metainfo) = match response {
+            librqbit::AddTorrentResponse::ListOnly(response) => {
+                let metainfo = response.torrent_bytes.clone();
+                let metadata =
+                    preview_metadata(&response.info, response.info_hash.as_string(), &metainfo)?;
+                (metadata, metainfo)
+            }
+            librqbit::AddTorrentResponse::AlreadyManaged(_, handle) => {
+                let (metadata, metainfo) = handle
+                    .with_metadata(|metadata| {
+                        let metainfo = metadata.torrent_bytes.clone();
+                        let preview = preview_metadata(
+                            &metadata.info,
+                            handle.info_hash().as_string(),
+                            &metainfo,
+                        )?;
+                        Ok::<_, TorrentError>((preview, metainfo))
+                    })
+                    .map_err(|error| TorrentError::MetadataResolution(error.to_string()))??;
+                (metadata, metainfo)
+            }
+            librqbit::AddTorrentResponse::Added(id, _) => {
+                let _ = self
+                    .api
+                    .api_torrent_action_pause(TorrentIdOrHash::Id(id))
+                    .await;
+                return Err(TorrentError::InspectionStartedTorrent);
+            }
+        };
+
+        if metainfo.len() as u64 > MAX_TORRENT_FILE_SIZE {
+            return Err(TorrentError::TorrentMetadataTooLarge);
+        }
+
+        let preview_id = Uuid::new_v4().to_string();
+        let prepared = PreparedTorrentPreview {
+            info_hash: metadata.info_hash.clone(),
+            file_count: metadata.files.len(),
+            metainfo,
+        };
+        self.torrent_previews
             .lock()
-            .map_err(|_| TorrentError::TorrentFileSelectionLock)?
-            .remove(selection_id);
+            .map_err(|_| TorrentError::PreviewLock)?
+            .insert(preview_id.clone(), prepared);
+
+        Ok(TorrentPreview {
+            preview_id,
+            name: metadata.name,
+            info_hash: metadata.info_hash,
+            total_size: metadata.total_size.to_string(),
+            piece_count: metadata.piece_count,
+            trackers: metadata.trackers,
+            is_private: metadata.is_private,
+            files: metadata.files,
+        })
+    }
+
+    pub fn discard_torrent_preview(&self, preview_id: &str) -> Result<(), TorrentError> {
+        self.torrent_previews
+            .lock()
+            .map_err(|_| TorrentError::PreviewLock)?
+            .remove(preview_id);
         Ok(())
+    }
+
+    pub async fn start_inspected_torrent(
+        &self,
+        preview_id: &str,
+        directory_id: &str,
+        selected_file_indices: &[usize],
+    ) -> Result<TorrentStatus, TorrentError> {
+        let output_directory = self.validate_output_directory(directory_id)?;
+        let prepared = self
+            .torrent_previews
+            .lock()
+            .map_err(|_| TorrentError::PreviewLock)?
+            .get(preview_id)
+            .cloned()
+            .ok_or(TorrentError::UnknownTorrentPreview)?;
+
+        if selected_file_indices.is_empty() {
+            return Err(TorrentError::NoFilesSelected);
+        }
+        if selected_file_indices.len() > prepared.file_count
+            || selected_file_indices
+                .iter()
+                .any(|index| *index >= prepared.file_count)
+        {
+            return Err(TorrentError::InvalidFileSelection);
+        }
+        let mut only_files: Vec<_> = selected_file_indices
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        if only_files.is_empty() {
+            return Err(TorrentError::NoFilesSelected);
+        }
+        only_files.sort_unstable();
+
+        let start_automatically = self.preferences()?.start_downloads_automatically;
+        let response = self
+            .api
+            .api_add_torrent(
+                AddTorrent::from_bytes(prepared.metainfo.clone()),
+                Some(AddTorrentOptions {
+                    output_folder: Some(output_directory.to_string_lossy().into_owned()),
+                    paused: !start_automatically,
+                    only_files: Some(only_files),
+                    ..AddTorrentOptions::default()
+                }),
+            )
+            .await
+            .map_err(|error| TorrentError::Engine(error.to_string()))?;
+        let id = response.id.ok_or_else(|| {
+            TorrentError::Engine("The torrent engine did not start the download.".to_string())
+        })?;
+        let status = self.get_torrent_status(id)?;
+        if !status.info_hash.eq_ignore_ascii_case(&prepared.info_hash) {
+            return Err(TorrentError::Engine(
+                "The started torrent did not match its inspected metadata.".to_string(),
+            ));
+        }
+        self.discard_torrent_preview(preview_id)?;
+        Ok(status)
     }
 
     pub fn default_directory_id(&self) -> &str {
@@ -331,74 +575,6 @@ impl TorrentService {
             .ok_or(TorrentError::UnknownDownloadDirectory)?;
 
         validate_directory(&path)
-    }
-
-    pub async fn add_magnet(
-        &self,
-        magnet_link: &str,
-        directory_id: &str,
-    ) -> Result<TorrentStatus, TorrentError> {
-        let trimmed = validate_magnet(magnet_link)?;
-
-        let output_directory = self.validate_output_directory(directory_id)?;
-        let start_automatically = self.preferences()?.start_downloads_automatically;
-        let response = self
-            .api
-            .api_add_torrent(
-                AddTorrent::from_url(trimmed),
-                Some(add_options(&output_directory, start_automatically)),
-            )
-            .await
-            .map_err(|error| TorrentError::Engine(error.to_string()))?;
-        let id = response.id.ok_or_else(|| {
-            TorrentError::Engine("The torrent engine did not start the download.".to_string())
-        })?;
-        self.get_torrent_status(id)
-    }
-
-    pub async fn add_torrent_url(
-        &self,
-        torrent_url: &str,
-        directory_id: &str,
-    ) -> Result<TorrentStatus, TorrentError> {
-        let normalized_url = validate_torrent_url(torrent_url)?;
-        let output_directory = self.validate_output_directory(directory_id)?;
-        let start_automatically = self.preferences()?.start_downloads_automatically;
-        let response = self
-            .api
-            .api_add_torrent(
-                AddTorrent::from_url(normalized_url.as_str()),
-                Some(add_options(&output_directory, start_automatically)),
-            )
-            .await
-            .map_err(|error| TorrentError::Engine(error.to_string()))?;
-        let id = response.id.ok_or_else(|| {
-            TorrentError::Engine("The torrent engine did not start the download.".to_string())
-        })?;
-        self.get_torrent_status(id)
-    }
-
-    pub async fn add_torrent_file(
-        &self,
-        torrent_path: &Path,
-        directory_id: &str,
-    ) -> Result<TorrentStatus, TorrentError> {
-        let bytes = read_torrent_file(torrent_path)?;
-
-        let output_directory = self.validate_output_directory(directory_id)?;
-        let start_automatically = self.preferences()?.start_downloads_automatically;
-        let response = self
-            .api
-            .api_add_torrent(
-                AddTorrent::from_bytes(bytes),
-                Some(add_options(&output_directory, start_automatically)),
-            )
-            .await
-            .map_err(|error| TorrentError::Engine(error.to_string()))?;
-        let id = response.id.ok_or_else(|| {
-            TorrentError::Engine("The torrent engine did not start the download.".to_string())
-        })?;
-        self.get_torrent_status(id)
     }
 
     pub async fn pause_torrent(&self, id: usize) -> Result<TorrentStatus, TorrentError> {
@@ -841,12 +1017,86 @@ fn validate_magnet(input: &str) -> Result<&str, TorrentError> {
     Ok(trimmed)
 }
 
-fn add_options(output_directory: &Path, start_automatically: bool) -> AddTorrentOptions {
+fn inspection_options(output_directory: &Path) -> AddTorrentOptions {
     AddTorrentOptions {
+        list_only: true,
         output_folder: Some(output_directory.to_string_lossy().into_owned()),
-        paused: !start_automatically,
         ..AddTorrentOptions::default()
     }
+}
+
+fn preview_metadata<ByteBuf: AsRef<[u8]>>(
+    info: &librqbit::ValidatedTorrentMetaV1Info<ByteBuf>,
+    info_hash: String,
+    metainfo: &[u8],
+) -> Result<PreviewMetadata, TorrentError> {
+    if metainfo.len() as u64 > MAX_TORRENT_FILE_SIZE {
+        return Err(TorrentError::TorrentMetadataTooLarge);
+    }
+
+    let files = info
+        .iter_file_details()
+        .enumerate()
+        .map(|(index, file)| {
+            let components = file.filename.to_vec();
+            let Some(filename) = components.last() else {
+                return Err(TorrentError::InvalidTorrentMetadata(
+                    "A torrent file has an empty path.".to_string(),
+                ));
+            };
+            if components.iter().any(|component| {
+                component.is_empty()
+                    || matches!(component.as_str(), "." | "..")
+                    || component.contains('/')
+                    || component.contains('\\')
+            }) {
+                return Err(TorrentError::InvalidTorrentMetadata(
+                    "A torrent file contains an unsafe path component.".to_string(),
+                ));
+            }
+
+            let extension = Path::new(filename)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .filter(|extension| !extension.is_empty())
+                .map(str::to_ascii_lowercase);
+
+            Ok(TorrentPreviewFile {
+                index,
+                path: components.join("/"),
+                filename: filename.clone(),
+                size_bytes: file.len.to_string(),
+                extension,
+                selected: true,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut seen_trackers = HashSet::new();
+    let trackers = librqbit::torrent_from_bytes(metainfo)
+        .ok()
+        .map(|torrent| {
+            torrent
+                .iter_announce()
+                .filter_map(|tracker| std::str::from_utf8(tracker.as_ref()).ok())
+                .filter(|tracker| seen_trackers.insert((*tracker).to_string()))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(PreviewMetadata {
+        name: info
+            .name()
+            .map(|name| name.into_owned())
+            .unwrap_or_else(|| "Unnamed torrent".to_string()),
+        info_hash,
+        total_size: info.lengths().total_length(),
+        piece_count: info.lengths().total_pieces(),
+        trackers,
+        is_private: info.info().private,
+        files,
+    })
 }
 
 fn status_from_parts(
@@ -924,6 +1174,7 @@ mod tests {
 
     const ONE_BYTE_TORRENT: &[u8] = b"d4:infod6:lengthi1e4:name5:hello12:piece lengthi16384e6:pieces20:\x11\xf6\xad\x8e\xc5\x2a\x29\x84\xab\xaa\xfd\x7c\x3b\x51\x65\x03\x78\x5c\x20\x72ee";
     const COMPLETE_TORRENT: &[u8] = b"d4:infod6:lengthi5e4:name5:world12:piece lengthi16384e6:pieces20:\x7c\x21\x14\x33\xf0\x20\x71\x59\x77\x41\xe6\xff\x5a\x8e\xa3\x47\x89\xab\xbf\x43ee";
+    const NESTED_TORRENT: &[u8] = b"d4:infod5:filesld6:lengthi3e4:pathl4:disc7:one.mkveed6:lengthi5e4:pathl4:disc7:two.srteee4:name4:Show12:piece lengthi16384e6:pieces20:\x11\xf6\xad\x8e\xc5\x2a\x29\x84\xab\xaa\xfd\x7c\x3b\x51\x65\x03\x78\x5c\x20\x72ee";
 
     #[test]
     fn accepts_a_valid_magnet_and_rejects_invalid_inputs() {
@@ -973,14 +1224,14 @@ mod tests {
     }
 
     #[test]
-    fn add_options_use_the_selected_output_directory() {
-        let options = add_options(Path::new("C:/downloads/selected"), true);
+    fn inspection_options_use_the_selected_output_directory_without_starting() {
+        let options = inspection_options(Path::new("C:/downloads/selected"));
         assert_eq!(
             options.output_folder.as_deref(),
             Some("C:/downloads/selected")
         );
-        assert!(!options.paused);
-        assert!(add_options(Path::new("C:/downloads/selected"), false).paused);
+        assert!(options.list_only);
+        assert!(options.only_files.is_none());
     }
 
     #[test]
@@ -1027,16 +1278,28 @@ mod tests {
             .expect("stage the selected file without starting it");
         assert_eq!(file_selection.file_name, "sample.torrent");
 
-        let added = service
-            .add_selected_torrent_file(&file_selection.id, &selected.id)
+        let preview = service
+            .inspect_selected_torrent_file(&file_selection.id, &selected.id)
             .await
-            .expect("start the selected local torrent");
+            .expect("inspect the selected local torrent");
+
+        assert_eq!(preview.name, "hello");
+        assert_eq!(preview.total_size, "1");
+        assert_eq!(preview.files.len(), 1);
+        assert_eq!(preview.files[0].path, "hello");
+        assert_eq!(preview.files[0].size_bytes, "1");
+        assert!(service.get_torrents().expect("read queue").is_empty());
+
+        let added = service
+            .start_inspected_torrent(&preview.preview_id, &selected.id, &[0])
+            .await
+            .expect("start the inspected local torrent");
 
         assert_eq!(added.output_directory, "selected");
         assert_eq!(added.total_bytes, 1);
         assert!(matches!(
             service
-                .add_selected_torrent_file(&file_selection.id, &selected.id)
+                .inspect_selected_torrent_file(&file_selection.id, &selected.id)
                 .await,
             Err(TorrentError::UnknownTorrentFileSelection)
         ));
@@ -1071,10 +1334,17 @@ mod tests {
             .expect("register the chosen folder");
         let torrent_file = temp.path().join("sample.torrent");
         fs::write(&torrent_file, ONE_BYTE_TORRENT).expect("write torrent metadata");
-        let added = service
-            .add_torrent_file(&torrent_file, &selected.id)
+        let file_selection = service
+            .register_torrent_file(torrent_file)
+            .expect("stage torrent metadata");
+        let preview = service
+            .inspect_selected_torrent_file(&file_selection.id, &selected.id)
             .await
-            .expect("add torrent to the local test session");
+            .expect("inspect torrent metadata");
+        let added = service
+            .start_inspected_torrent(&preview.preview_id, &selected.id, &[0])
+            .await
+            .expect("start inspected torrent");
 
         assert_eq!(
             service
@@ -1110,7 +1380,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn torrent_url_fetches_and_adds_metainfo_from_http() {
+    async fn torrent_url_fetches_and_inspects_metainfo_without_starting() {
         let temp = tempfile::tempdir().expect("temporary test directory");
         let output_directory = temp.path().join("downloads");
         fs::create_dir_all(&output_directory).expect("output directory");
@@ -1152,16 +1422,186 @@ mod tests {
         });
 
         let url = format!("http://{address}/sample.torrent");
-        let added = service
-            .add_torrent_url(&url, &directory.id)
+        let preview = service
+            .inspect_torrent_url(&url, &directory.id)
             .await
-            .expect("fetch and add torrent metainfo from HTTP");
+            .expect("fetch and inspect torrent metainfo from HTTP");
         server.join().expect("join local torrent server");
 
-        assert_eq!(added.name.as_deref(), Some("hello"));
-        assert_eq!(added.total_bytes, 1);
-        assert_eq!(added.output_directory, "downloads");
+        assert_eq!(preview.name, "hello");
+        assert_eq!(preview.total_size, "1");
+        assert_eq!(preview.files[0].size_bytes, "1");
+        assert!(service.get_torrents().expect("read queue").is_empty());
         service.api.session().stop().await;
+    }
+
+    #[tokio::test]
+    async fn inspection_reports_nested_files_and_exact_sizes_without_starting() {
+        let temp = tempfile::tempdir().expect("temporary test directory");
+        let output_directory = temp.path().join("downloads");
+        fs::create_dir_all(&output_directory).expect("output directory");
+        let session = Session::new_with_opts(
+            output_directory.clone(),
+            SessionOptions {
+                dht: None,
+                listen: None,
+                persistence: None,
+                ..SessionOptions::default()
+            },
+        )
+        .await
+        .expect("create test session");
+        let service =
+            TorrentService::with_session(session, output_directory).expect("create test service");
+        let directory = service
+            .list_download_directories()
+            .expect("list folders")
+            .into_iter()
+            .next()
+            .expect("default output directory");
+        let torrent_path = temp.path().join("nested.torrent");
+        fs::write(&torrent_path, NESTED_TORRENT).expect("write nested torrent");
+        let selection = service
+            .register_torrent_file(torrent_path)
+            .expect("register local torrent");
+
+        let preview = service
+            .inspect_selected_torrent_file(&selection.id, &directory.id)
+            .await
+            .expect("inspect nested torrent");
+
+        assert_eq!(preview.name, "Show");
+        assert_eq!(preview.total_size, "8");
+        assert_eq!(preview.files.len(), 2);
+        assert_eq!(preview.files[0].index, 0);
+        assert_eq!(preview.files[0].path, "disc/one.mkv");
+        assert_eq!(preview.files[0].size_bytes, "3");
+        assert_eq!(preview.files[1].path, "disc/two.srt");
+        assert_eq!(preview.files[1].size_bytes, "5");
+        assert!(preview.files.iter().all(|file| file.selected));
+        assert!(service.get_torrents().expect("read queue").is_empty());
+        assert!(matches!(
+            service
+                .start_inspected_torrent(&preview.preview_id, &directory.id, &[])
+                .await,
+            Err(TorrentError::NoFilesSelected)
+        ));
+        assert!(matches!(
+            service
+                .start_inspected_torrent(&preview.preview_id, &directory.id, &[usize::MAX])
+                .await,
+            Err(TorrentError::InvalidFileSelection)
+        ));
+        assert!(service.get_torrents().expect("read queue").is_empty());
+        let started = service
+            .start_inspected_torrent(&preview.preview_id, &directory.id, &[1])
+            .await
+            .expect("start only the selected file");
+        assert_eq!(started.output_directory, "downloads");
+        assert_eq!(
+            started
+                .files
+                .iter()
+                .filter(|file| file.included)
+                .map(|file| file.size_bytes)
+                .sum::<u64>(),
+            5
+        );
+        service.api.session().stop().await;
+    }
+
+    #[tokio::test]
+    async fn magnet_metadata_is_resolved_from_a_local_peer_without_starting_content() {
+        let temp = tempfile::tempdir().expect("temporary test directory");
+        let seed_directory = temp.path().join("seed");
+        let client_directory = temp.path().join("client");
+        fs::create_dir_all(&seed_directory).expect("seed directory");
+        fs::create_dir_all(&client_directory).expect("client directory");
+        fs::write(seed_directory.join("hello"), b"x").expect("prepare seed file");
+
+        let seeder = Session::new_with_opts(
+            seed_directory.clone(),
+            SessionOptions {
+                dht: None,
+                listen: Some(librqbit::ListenerOptions {
+                    listen_addr: "127.0.0.1:0".parse().expect("ephemeral peer port"),
+                    ..Default::default()
+                }),
+                persistence: None,
+                ..SessionOptions::default()
+            },
+        )
+        .await
+        .expect("create local seeder");
+        let seed_handle = seeder
+            .add_torrent(
+                AddTorrent::from_bytes(ONE_BYTE_TORRENT.to_vec()),
+                Some(AddTorrentOptions {
+                    output_folder: Some(seed_directory.to_string_lossy().into_owned()),
+                    overwrite: true,
+                    ..AddTorrentOptions::default()
+                }),
+            )
+            .await
+            .expect("add torrent metadata to seeder")
+            .into_handle()
+            .expect("seed torrent handle");
+        seed_handle
+            .wait_until_initialized()
+            .await
+            .expect("initialize seeder");
+        let peer = seeder.listen_addr().expect("seeder peer address");
+
+        let client_session = Session::new_with_opts(
+            client_directory.clone(),
+            SessionOptions {
+                dht: None,
+                listen: None,
+                persistence: None,
+                ..SessionOptions::default()
+            },
+        )
+        .await
+        .expect("create metadata client");
+        let service = TorrentService::with_session(client_session, client_directory.clone())
+            .expect("create metadata client service");
+        let output_id = service
+            .list_download_directories()
+            .expect("list download directories")
+            .into_iter()
+            .next()
+            .expect("client output folder")
+            .id;
+        let output_directory = service
+            .validate_output_directory(&output_id)
+            .expect("validate client output folder");
+        let metainfo =
+            librqbit::torrent_from_bytes(ONE_BYTE_TORRENT).expect("parse fixture metainfo");
+        let magnet = format!("magnet:?xt=urn:btih:{}", metainfo.info_hash.as_string());
+        let preview = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            service.inspect_source_with_options(
+                AddTorrent::from_url(magnet.as_str()),
+                AddTorrentOptions {
+                    list_only: true,
+                    output_folder: Some(output_directory.to_string_lossy().into_owned()),
+                    initial_peers: Some(vec![peer]),
+                    ..AddTorrentOptions::default()
+                },
+            ),
+        )
+        .await
+        .expect("magnet metadata resolution timed out")
+        .expect("resolve magnet metadata from the local peer");
+
+        assert_eq!(preview.name, "hello");
+        assert_eq!(preview.total_size, "1");
+        assert!(service
+            .get_torrents()
+            .expect("read client queue")
+            .is_empty());
+        service.api.session().stop().await;
+        seeder.stop().await;
     }
 
     #[tokio::test]
@@ -1202,10 +1642,17 @@ mod tests {
         let completed_path = temp.path().join("completed.torrent");
         fs::write(&pending_path, ONE_BYTE_TORRENT).expect("write pending metainfo");
         fs::write(&completed_path, COMPLETE_TORRENT).expect("write completed metainfo");
-        let pending = service
-            .add_torrent_file(&pending_path, &selected.id)
+        let pending_selection = service
+            .register_torrent_file(pending_path)
+            .expect("register unfinished torrent");
+        let pending_preview = service
+            .inspect_selected_torrent_file(&pending_selection.id, &selected.id)
             .await
-            .expect("add unfinished torrent");
+            .expect("inspect unfinished torrent");
+        let pending = service
+            .start_inspected_torrent(&pending_preview.preview_id, &selected.id, &[0])
+            .await
+            .expect("start unfinished torrent");
         let pending = service
             .pause_torrent(pending.id)
             .await

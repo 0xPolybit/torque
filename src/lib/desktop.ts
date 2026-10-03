@@ -27,6 +27,26 @@ export interface TorrentFileSelection {
   fileName: string;
 }
 
+export interface TorrentPreviewFile {
+  index: number;
+  path: string;
+  filename: string;
+  sizeBytes: string;
+  extension: string | null;
+  selected: boolean;
+}
+
+export interface TorrentPreview {
+  previewId: string;
+  name: string;
+  infoHash: string;
+  totalSize: string;
+  pieceCount: number;
+  trackers: string[];
+  isPrivate: boolean;
+  files: TorrentPreviewFile[];
+}
+
 export interface DownloadDirectoryList {
   defaultId: string;
   directories: DownloadDirectory[];
@@ -119,29 +139,45 @@ export function openTorrentFolder(torrentId: number): Promise<void> {
   return invoke<void>("open_torrent_folder", { torrentId });
 }
 
-export function addMagnet(
+export function inspectMagnet(
   magnetLink: string,
   outputDirectoryId: string,
-): Promise<TorrentStatus> {
-  return invoke<TorrentStatus>("add_magnet", { magnetLink, outputDirectoryId });
+): Promise<TorrentPreview> {
+  return invoke<TorrentPreview>("inspect_magnet", { magnetLink, outputDirectoryId });
 }
 
-export function addTorrentUrl(
+export function inspectTorrentUrl(
   torrentUrl: string,
   outputDirectoryId: string,
-): Promise<TorrentStatus> {
-  return invoke<TorrentStatus>("add_torrent_url", { torrentUrl, outputDirectoryId });
+): Promise<TorrentPreview> {
+  return invoke<TorrentPreview>("inspect_torrent_url", { torrentUrl, outputDirectoryId });
 }
 
 export function selectTorrentFile(): Promise<TorrentFileSelection | null> {
   return invoke<TorrentFileSelection | null>("select_torrent_file");
 }
 
-export function addTorrentFile(
+export function inspectTorrentFile(
   torrentFileId: string,
   outputDirectoryId: string,
+): Promise<TorrentPreview> {
+  return invoke<TorrentPreview>("inspect_torrent_file", { torrentFileId, outputDirectoryId });
+}
+
+export function startInspectedTorrent(
+  previewId: string,
+  outputDirectoryId: string,
+  selectedFileIndices: number[],
 ): Promise<TorrentStatus> {
-  return invoke<TorrentStatus>("add_torrent_file", { torrentFileId, outputDirectoryId });
+  return invoke<TorrentStatus>("start_inspected_torrent", {
+    previewId,
+    outputDirectoryId,
+    selectedFileIndices,
+  });
+}
+
+export function discardTorrentPreview(previewId: string): Promise<void> {
+  return invoke<void>("discard_torrent_preview", { previewId });
 }
 
 export function discardTorrentFileSelection(torrentFileId: string): Promise<void> {

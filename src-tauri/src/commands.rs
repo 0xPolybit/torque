@@ -5,7 +5,8 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::torrent::{
-    AppPreferences, DownloadDirectory, TorrentFileSelection, TorrentService, TorrentStatus,
+    AppPreferences, DownloadDirectory, TorrentFileSelection, TorrentPreview, TorrentService,
+    TorrentStatus,
 };
 
 #[derive(Serialize)]
@@ -86,13 +87,13 @@ pub async fn select_download_directory(
 }
 
 #[tauri::command]
-pub async fn add_magnet(
+pub async fn inspect_magnet(
     service: State<'_, TorrentService>,
     magnet_link: String,
     output_directory_id: String,
-) -> Result<TorrentStatus, String> {
+) -> Result<TorrentPreview, String> {
     service
-        .add_magnet(&magnet_link, &output_directory_id)
+        .inspect_magnet(&magnet_link, &output_directory_id)
         .await
         .map_err(|error| error.to_string())
 }
@@ -120,13 +121,13 @@ pub async fn select_torrent_file(
 }
 
 #[tauri::command]
-pub async fn add_torrent_file(
+pub async fn inspect_torrent_file(
     service: State<'_, TorrentService>,
     torrent_file_id: String,
     output_directory_id: String,
-) -> Result<TorrentStatus, String> {
+) -> Result<TorrentPreview, String> {
     service
-        .add_selected_torrent_file(&torrent_file_id, &output_directory_id)
+        .inspect_selected_torrent_file(&torrent_file_id, &output_directory_id)
         .await
         .map_err(|error| error.to_string())
 }
@@ -142,14 +143,37 @@ pub fn discard_torrent_file_selection(
 }
 
 #[tauri::command]
-pub async fn add_torrent_url(
+pub async fn inspect_torrent_url(
     service: State<'_, TorrentService>,
     torrent_url: String,
     output_directory_id: String,
+) -> Result<TorrentPreview, String> {
+    service
+        .inspect_torrent_url(&torrent_url, &output_directory_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn start_inspected_torrent(
+    service: State<'_, TorrentService>,
+    preview_id: String,
+    output_directory_id: String,
+    selected_file_indices: Vec<usize>,
 ) -> Result<TorrentStatus, String> {
     service
-        .add_torrent_url(&torrent_url, &output_directory_id)
+        .start_inspected_torrent(&preview_id, &output_directory_id, &selected_file_indices)
         .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn discard_torrent_preview(
+    service: State<'_, TorrentService>,
+    preview_id: String,
+) -> Result<(), String> {
+    service
+        .discard_torrent_preview(&preview_id)
         .map_err(|error| error.to_string())
 }
 

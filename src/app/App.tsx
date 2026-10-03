@@ -126,15 +126,18 @@ export default function App() {
           selectedDirectory={queue.selectedDirectory}
           error={queue.error}
           busy={queue.busy}
+          inspectingMetadata={queue.inspectingMetadata}
           selectingDirectory={queue.selectingDirectory}
           selectingFile={queue.selectingFile}
           onClose={() => setShowAddTorrent(false)}
           onSelectDirectory={queue.chooseDirectory}
           onChooseTorrentFile={queue.chooseTorrentFile}
           onDiscardTorrentFile={queue.discardTorrentFile}
-          onAddMagnet={queue.addMagnet}
-          onAddUrl={queue.addTorrentUrl}
-          onAddFile={queue.addTorrentFile}
+          onInspectMagnet={queue.inspectMagnet}
+          onInspectUrl={queue.inspectTorrentUrl}
+          onInspectFile={queue.inspectTorrentFile}
+          onDiscardPreview={queue.discardTorrentPreview}
+          onStartPreview={queue.startInspectedTorrent}
         />
       )}
 

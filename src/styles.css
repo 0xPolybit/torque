@@ -1965,6 +1965,294 @@ button:focus-visible,
   color: var(--color-success-text);
 }
 
+.add-dialog--inspection {
+  width: min(820px, calc(100vw - 32px));
+}
+
+.add-dialog--inspection .add-dialog__content {
+  padding-bottom: 18px;
+}
+
+.torrent-inspection {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  margin-top: 16px;
+}
+
+.torrent-inspection__heading {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--color-border-soft);
+}
+
+.torrent-inspection__title {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.torrent-inspection__title h3 {
+  overflow: hidden;
+  margin: 0;
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 620;
+  letter-spacing: -0.015em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.torrent-inspection__hash {
+  overflow: hidden;
+  color: var(--color-subtle);
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.torrent-inspection__badges {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.torrent-inspection__badges span {
+  padding: 3px 7px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 6px;
+  background: var(--color-inset);
+  color: var(--color-muted);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.torrent-inspection__file-toolbar {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.torrent-inspection__selection-actions,
+.torrent-inspection__tree-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.torrent-inspection__file-toolbar button {
+  display: inline-flex;
+  min-height: 27px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-muted);
+  font-size: 10px;
+  cursor: pointer;
+  transition: color 130ms ease, background-color 130ms ease, border-color 130ms ease;
+}
+
+.torrent-inspection__file-toolbar button:hover:not(:disabled) {
+  border-color: var(--color-border);
+  background: var(--color-control-hover);
+  color: var(--color-text);
+}
+
+.torrent-inspection__file-toolbar button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.torrent-inspection__tree {
+  height: 310px;
+  min-height: 160px;
+  overflow: auto;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 9px;
+  background: var(--color-inset);
+  scrollbar-color: #47534b transparent;
+  scrollbar-width: thin;
+}
+
+.torrent-inspection__tree-spacer {
+  position: relative;
+  min-width: 470px;
+}
+
+.torrent-inspection__row {
+  position: absolute;
+  right: 0;
+  left: 0;
+  display: grid;
+  grid-template-columns: 16px 14px 16px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 7px;
+  padding-right: 11px;
+  border-bottom: 1px solid transparent;
+  color: var(--color-text);
+  font-size: 10px;
+  transition: background-color 100ms ease;
+}
+
+.torrent-inspection__row:hover {
+  background: var(--color-selected);
+}
+
+.torrent-inspection__row input[type="checkbox"] {
+  width: 14px;
+  min-height: 14px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+.torrent-inspection__row input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+}
+
+.torrent-inspection__expand {
+  display: grid;
+  width: 16px;
+  height: 18px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-subtle);
+  cursor: pointer;
+}
+
+.torrent-inspection__expand:hover {
+  background: var(--color-control-hover);
+  color: var(--color-text);
+}
+
+.torrent-inspection__folder-icon {
+  color: #a6c77e;
+}
+
+.torrent-inspection__file-icon {
+  color: var(--color-subtle);
+}
+
+.torrent-inspection__leaf-spacer {
+  width: 14px;
+}
+
+.torrent-inspection__name {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.torrent-inspection__file-count,
+.torrent-inspection__size {
+  color: var(--color-muted);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.torrent-inspection__size {
+  grid-column: 6;
+  min-width: 72px;
+  text-align: right;
+}
+
+.torrent-inspection__empty {
+  display: grid;
+  min-height: 160px;
+  place-items: center;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 9px;
+  background: var(--color-inset);
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
+.torrent-inspection__selected {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 1px 8px;
+  color: var(--color-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.torrent-inspection__selected > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.torrent-inspection__selected svg {
+  color: var(--color-accent);
+}
+
+.torrent-inspection__selected strong {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.torrent-inspection__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border-soft);
+}
+
+.is-spinning {
+  animation: torrent-spinner 900ms linear infinite;
+}
+
+@keyframes torrent-spinner {
+  to { transform: rotate(360deg); }
+}
+
+:root[data-color-scheme="light"] .torrent-inspection__badges span {
+  border-color: var(--color-border);
+}
+
+:root[data-color-scheme="light"] .torrent-inspection__row:hover {
+  background: #eff4ef;
+}
+
+:root[data-color-scheme="light"] .torrent-inspection__folder-icon {
+  color: #628b47;
+}
+
+@media (max-width: 820px) {
+  .torrent-inspection__heading {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .torrent-inspection__badges {
+    justify-content: flex-start;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

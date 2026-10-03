@@ -40,6 +40,31 @@ export function formatBytes(bytes: number): string {
   return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[unit]}`;
 }
 
+export function formatExactBytes(value: string | bigint): string {
+  let bytes: bigint;
+  try {
+    bytes = typeof value === "bigint" ? value : BigInt(value);
+  } catch {
+    return "—";
+  }
+  if (bytes < 0n) return "—";
+  if (bytes < 1024n) return `${bytes} B`;
+
+  const units = ["KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
+  let divisor = 1024n;
+  let unit = 0;
+  while (bytes >= divisor * 1024n && unit < units.length - 1) {
+    divisor *= 1024n;
+    unit += 1;
+  }
+  const tenths = (bytes * 10n + divisor / 2n) / divisor;
+  const whole = tenths / 10n;
+  const fraction = tenths % 10n;
+  return whole >= 100n || fraction === 0n
+    ? `${whole} ${units[unit]}`
+    : `${whole}.${fraction} ${units[unit]}`;
+}
+
 export function formatSpeed(bytesPerSecond: number | null): string {
   return bytesPerSecond === null || !Number.isFinite(bytesPerSecond) || bytesPerSecond < 0
     ? "—"

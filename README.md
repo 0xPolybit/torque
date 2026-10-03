@@ -39,6 +39,7 @@ Torque is a cross-platform desktop BitTorrent client built with a Tauri shell, a
 ## Features
 
 - Add torrents from magnet links, local `.torrent` files, and HTTP/HTTPS torrent URLs.
+- Inspect torrent metadata and browse the complete nested file tree before downloading; choose exactly which files to include.
 - Choose a destination folder with the native folder picker; Torque remembers it for future downloads.
 - Track progress, downloaded and total size, download and upload speeds, peers, ETA, and current state.
 - Pause and resume downloads, retry errors, open a completed download's folder, and remove torrents while keeping their files.
@@ -135,13 +136,13 @@ Use the NSIS `.exe` installer when sharing the app with Windows users. The stand
 
 ## Adding downloads
 
-Select **Add torrent**, choose a source type, set the destination folder, and select **Start Download**.
+Select **Add torrent**, choose a source type, and set the destination folder. Torque then opens a metadata review stage with the torrent name, info hash, total size, file count, piece count, and available privacy/tracker details. Browse the nested file tree, select individual files or use **Select all** / **Select none**, and check the selected-size total before selecting **Start Download**. Inspection never starts content transfer.
 
-- **Magnet link:** paste a `magnet:?` URI containing a BitTorrent info hash.
-- **Torrent file:** select a local `.torrent` file with the native file picker.
-- **Torrent URL:** enter an HTTP or HTTPS URL that returns torrent metainfo.
+- **Magnet link:** paste a `magnet:?` URI containing a BitTorrent info hash. Torque asks librqbit to resolve metadata first and shows a fetching state while peers or DHT provide it.
+- **Torrent file:** select a local `.torrent` file with the native file picker. Its metainfo is parsed locally without adding it to the active session.
+- **Torrent URL:** enter an HTTP or HTTPS URL that returns torrent metainfo. The metainfo is fetched and inspected before the download starts.
 
-Torque validates inputs in the interface and again in Rust. Invalid inputs and backend errors remain visible so they can be corrected. The selected folder becomes the remembered default for later downloads.
+Torque validates inputs in the interface and again in Rust. Invalid inputs and backend errors remain visible so they can be corrected. The selected folder becomes the remembered default for later downloads. File selection is passed to librqbit when the user confirms, and unselected torrent files are not downloaded.
 
 ## Settings and persistence
 
@@ -151,7 +152,9 @@ Torque stores preferences, the last selected folder, torrent identifiers, destin
 
 ## Architecture
 
-The React frontend calls typed Tauri command wrappers. Tauri commands adapt native pickers and delegate torrent work to `TorrentService`. The service owns the long-lived `librqbit` session, validates torrent inputs and destinations, maps engine state to application statuses, and persists queue metadata.
+The React frontend calls typed Tauri command wrappers. Tauri commands adapt native pickers and delegate torrent work to `TorrentService`. The service owns the long-lived `librqbit` session and uses its `list_only` metadata path to inspect local files, torrent URLs, and magnet links without registering or downloading torrent contents. Validated metainfo is held behind a short-lived opaque preview ID in Rust; the frontend receives only torrent/file metadata and file indexes. On explicit confirmation, the service starts that inspected metainfo with the selected file indexes and destination. It also validates inputs and destinations, maps engine state to application statuses, and persists queue metadata.
+
+The file tree is assembled in a dedicated frontend helper and rendered as a flattened, virtualized view. Selection state stays in the inspection component; transfer rows remain coupled to app-level torrent statuses rather than rqbit types.
 
 ## Security
 
@@ -163,7 +166,8 @@ The frontend does not receive unrestricted filesystem access. Native file and fo
 src/
   app/                    App shell, desktop connection, queue and preferences state
   components/             Sidebar, backend status, and toast notifications
-  features/transfers/     Add/settings dialogs, filters, transfer rows, and formatting
+  features/transfers/     Add/inspection/settings dialogs, virtual file tree, filters, and transfer rows
+    torrentPreviewTree.ts Build a nested file model from inspected torrent paths
   lib/                    Typed Tauri command wrappers and frontend DTOs
   styles.css              Desktop layout, themes, controls, and responsive rules
 src-tauri/
