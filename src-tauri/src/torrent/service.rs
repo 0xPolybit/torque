@@ -1274,6 +1274,26 @@ mod tests {
     const COMPLETE_TORRENT: &[u8] = b"d4:infod6:lengthi5e4:name5:world12:piece lengthi16384e6:pieces20:\x7c\x21\x14\x33\xf0\x20\x71\x59\x77\x41\xe6\xff\x5a\x8e\xa3\x47\x89\xab\xbf\x43ee";
     const NESTED_TORRENT: &[u8] = b"d4:infod5:filesld6:lengthi3e4:pathl4:disc7:one.mkveed6:lengthi5e4:pathl4:disc7:two.srteee4:name4:Show12:piece lengthi16384e6:pieces20:\x11\xf6\xad\x8e\xc5\x2a\x29\x84\xab\xaa\xfd\x7c\x3b\x51\x65\x03\x78\x5c\x20\x72ee";
 
+    // The skipped README occupies its own later piece; earlier files share the selected file's first piece.
+    fn multi_file_download_torrent() -> Vec<u8> {
+        let mut info = b"d5:filesl".to_vec();
+        info.extend_from_slice(b"d6:lengthi3e4:pathl4:disc7:one.mkvee");
+        info.extend_from_slice(b"d6:lengthi5e4:pathl4:disc7:two.srtee");
+        info.extend_from_slice(b"d6:lengthi16376e4:pathl4:disc10:filler.binee");
+        info.extend_from_slice(b"d6:lengthi4e4:pathl5:extra10:readme.txtee");
+        info.extend_from_slice(b"e4:name4:Show12:piece lengthi16384e6:pieces40:");
+        info.extend_from_slice(&[
+            0x62, 0x14, 0x23, 0xd0, 0xca, 0xa5, 0x22, 0xd0, 0xc4, 0x31, 0x59, 0xb9, 0x2a, 0x8f,
+            0x81, 0xe4, 0x2d, 0xfb, 0xe8, 0x01, 0xa5, 0xfd, 0xf1, 0xff, 0x3c, 0xe3, 0x70, 0x9f,
+            0x66, 0x39, 0x67, 0xe2, 0x4c, 0x0a, 0xb1, 0x4e, 0x6e, 0x9d, 0x04, 0xbe,
+        ]);
+        info.push(b'e');
+        let mut metainfo = b"d4:info".to_vec();
+        metainfo.extend_from_slice(&info);
+        metainfo.push(b'e');
+        metainfo
+    }
+
     #[test]
     fn accepts_a_valid_magnet_and_rejects_invalid_inputs() {
         let valid = "magnet:?xt=urn:btih:0123456789012345678901234567890123456789&dn=sample";
@@ -1555,6 +1575,130 @@ mod tests {
             Err(TorrentError::InvalidFileSelection)
         ));
         service.api.session().stop().await;
+    }
+
+    #[tokio::test]
+    async fn only_selected_file_payload_is_downloaded_from_a_local_peer() {
+        let temp = tempfile::tempdir().expect("temporary test directory");
+        let seed_directory = temp.path().join("seed");
+        let client_directory = temp.path().join("client");
+        fs::create_dir_all(seed_directory.join("disc")).expect("create nested seed folder");
+        fs::create_dir_all(seed_directory.join("extra")).expect("create extra seed folder");
+        fs::create_dir_all(&client_directory).expect("create client folder");
+        fs::write(seed_directory.join("disc/one.mkv"), b"abc").expect("seed first file");
+        fs::write(seed_directory.join("disc/two.srt"), b"12345").expect("seed selected file");
+        fs::write(seed_directory.join("disc/filler.bin"), vec![b'f'; 16_376])
+            .expect("seed boundary-piece filler");
+        fs::write(seed_directory.join("extra/readme.txt"), b"WXYZ").expect("seed skipped file");
+        let metainfo = multi_file_download_torrent();
+        let parsed = librqbit::torrent_from_bytes(&metainfo).expect("parse download fixture");
+
+        let seeder = Session::new_with_opts(
+            seed_directory.clone(),
+            SessionOptions {
+                dht: None,
+                listen: Some(librqbit::ListenerOptions {
+                    listen_addr: "127.0.0.1:0".parse().expect("ephemeral peer port"),
+                    ..Default::default()
+                }),
+                persistence: None,
+                ..SessionOptions::default()
+            },
+        )
+        .await
+        .expect("create local seeder");
+        let seed_handle = seeder
+            .add_torrent(
+                AddTorrent::from_bytes(metainfo.clone()),
+                Some(AddTorrentOptions {
+                    output_folder: Some(seed_directory.to_string_lossy().into_owned()),
+                    overwrite: true,
+                    ..AddTorrentOptions::default()
+                }),
+            )
+            .await
+            .expect("add local seed torrent")
+            .into_handle()
+            .expect("get local seed handle");
+        seed_handle
+            .wait_until_initialized()
+            .await
+            .expect("initialize local seeder");
+        let peer = seeder.listen_addr().expect("local seeder peer address");
+
+        let client_session = Session::new_with_opts(
+            client_directory.clone(),
+            SessionOptions {
+                dht: None,
+                listen: None,
+                persistence: None,
+                ..SessionOptions::default()
+            },
+        )
+        .await
+        .expect("create selective-download client");
+        let service = TorrentService::with_session(client_session, client_directory.clone())
+            .expect("create selective-download service");
+        let directory = service
+            .list_download_directories()
+            .expect("list output folders")
+            .into_iter()
+            .next()
+            .expect("client output folder");
+        let output_directory = service
+            .validate_output_directory(&directory.id)
+            .expect("validate client destination");
+        let torrent_file = temp.path().join("selective.torrent");
+        fs::write(&torrent_file, &metainfo).expect("write local metainfo");
+        let file_grant = service
+            .register_torrent_file(torrent_file)
+            .expect("stage local metainfo");
+        let preview = service
+            .inspect_selected_torrent_file(&file_grant.id, &directory.id)
+            .await
+            .expect("inspect multi-file metainfo");
+        assert_eq!(preview.files[1].index, 1);
+        assert_eq!(preview.files[1].path, "disc/two.srt");
+        assert_eq!(preview.files[3].index, 3);
+        assert_eq!(preview.files[3].path, "extra/readme.txt");
+        assert_eq!(preview.info_hash, parsed.info_hash.as_string());
+
+        let response = service
+            .api
+            .api_add_torrent(
+                AddTorrent::from_bytes(metainfo),
+                Some(AddTorrentOptions {
+                    output_folder: Some(output_directory.to_string_lossy().into_owned()),
+                    only_files: Some(vec![preview.files[1].index]),
+                    initial_peers: Some(vec![peer]),
+                    ..AddTorrentOptions::default()
+                }),
+            )
+            .await
+            .expect("start download for the selected file only");
+        let torrent_id = response.id.expect("selective torrent id");
+        let selected_path = output_directory.join("disc/two.srt");
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+        while tokio::time::Instant::now() < deadline {
+            if fs::read(&selected_path).ok().as_deref() == Some(&b"12345"[..]) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert_eq!(
+            fs::read(&selected_path).expect("selected file payload downloaded"),
+            b"12345"
+        );
+        let status = service
+            .get_torrent_status(torrent_id)
+            .expect("retrieve selective download status");
+        assert!(status.files[1].included);
+        assert_eq!(status.files[1].downloaded_bytes, "5");
+        assert!(!status.files[3].included);
+        assert_eq!(status.files[3].downloaded_bytes, "0");
+
+        service.api.session().stop().await;
+        seeder.stop().await;
     }
 
     #[tokio::test]
