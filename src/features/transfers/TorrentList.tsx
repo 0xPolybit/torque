@@ -9,7 +9,7 @@ interface TorrentListProps {
   onRetry: (torrentId: number) => Promise<boolean>;
   onRemove: (torrentId: number) => Promise<boolean>;
   onOpenFolder: (torrentId: number) => Promise<boolean>;
-  onUpdateFileSelection: (torrentId: number, selectedIndices: number[]) => Promise<boolean>;
+  onOpenDetails: (torrentId: number) => void;
 }
 
 export function TorrentList({
@@ -20,7 +20,7 @@ export function TorrentList({
   onRetry,
   onRemove,
   onOpenFolder,
-  onUpdateFileSelection,
+  onOpenDetails,
 }: TorrentListProps) {
   return (
     <section className="queue-panel queue-panel--populated" aria-label="Torrent transfers">
@@ -36,7 +36,7 @@ export function TorrentList({
             onRetry={onRetry}
             onRemove={onRemove}
             onOpenFolder={onOpenFolder}
-            onUpdateFileSelection={onUpdateFileSelection}
+            onOpenDetails={onOpenDetails}
           />
         ))}
       </div>

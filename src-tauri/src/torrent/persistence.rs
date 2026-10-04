@@ -9,7 +9,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use super::service::{TorrentState, TorrentStatus};
+use super::service::{TorrentSourceType, TorrentState, TorrentStatus};
 
 const STATE_VERSION: u32 = 1;
 
@@ -55,6 +55,8 @@ pub struct PersistedTorrent {
     pub total_bytes: u64,
     pub added_at: u64,
     pub completed_at: Option<u64>,
+    #[serde(default)]
+    pub source_type: TorrentSourceType,
     #[serde(default)]
     pub selected_file_indices: Option<Vec<usize>>,
 }
@@ -291,6 +293,9 @@ impl ApplicationPersistence {
                     .collect(),
             )
         };
+        let source_type = prior
+            .map(|record| record.source_type)
+            .unwrap_or(TorrentSourceType::Unknown);
         let record = PersistedTorrent {
             id: status.id,
             info_hash: status.info_hash.clone(),
@@ -304,6 +309,7 @@ impl ApplicationPersistence {
             total_bytes,
             added_at,
             completed_at,
+            source_type,
             selected_file_indices,
         };
         let should_write = prior.is_none_or(|prior| {
@@ -314,6 +320,7 @@ impl ApplicationPersistence {
                 || prior.last_state != record.last_state
                 || prior.last_error != record.last_error
                 || prior.completed_at != record.completed_at
+                || prior.source_type != record.source_type
                 || prior.selected_file_indices != record.selected_file_indices
                 || (prior.progress_percent - record.progress_percent).abs() >= 1.0
         });
@@ -337,6 +344,49 @@ impl ApplicationPersistence {
             .map_err(|_| "state lock poisoned".to_string())?;
         state.torrents.remove(&info_hash.to_ascii_lowercase());
         self.write_locked(&state)
+    }
+
+    pub fn update_source_type(
+        &self,
+        info_hash: &str,
+        source_type: TorrentSourceType,
+    ) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "state lock poisoned".to_string())?;
+        if let Some(record) = state.torrents.get_mut(&info_hash.to_ascii_lowercase()) {
+            record.source_type = source_type;
+            self.write_locked(&state)?;
+        }
+        Ok(())
+    }
+
+    pub fn source_type_for_id(&self, id: usize) -> Result<TorrentSourceType, String> {
+        self.state
+            .lock()
+            .map(|state| {
+                state
+                    .torrents
+                    .values()
+                    .find(|record| record.id == id)
+                    .map(|record| record.source_type)
+                    .unwrap_or_default()
+            })
+            .map_err(|_| "state lock poisoned".to_string())
+    }
+
+    pub fn output_path_for_id(&self, id: usize) -> Result<Option<PathBuf>, String> {
+        self.state
+            .lock()
+            .map(|state| {
+                state
+                    .torrents
+                    .values()
+                    .find(|record| record.id == id)
+                    .map(|record| record.output_path.clone())
+            })
+            .map_err(|_| "state lock poisoned".to_string())
     }
 
     fn write_locked(&self, state: &AppStateFile) -> Result<(), String> {

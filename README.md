@@ -27,6 +27,7 @@ Torque is a cross-platform desktop BitTorrent client built with a Tauri shell, a
 - [Build](#build)
   - [Build a Windows `.exe` installer](#build-a-windows-exe-installer)
 - [Adding downloads](#adding-downloads)
+- [Torrent details](#torrent-details)
 - [Browse and search](#browse-and-search)
 - [Settings and persistence](#settings-and-persistence)
 - [Architecture](#architecture)
@@ -45,6 +46,7 @@ Torque is a cross-platform desktop BitTorrent client built with a Tauri shell, a
 - Change a torrent's file selection later from its Files tab; search large file lists and sort by name, size, or progress.
 - Choose a destination folder with the native folder picker; Torque remembers it for future downloads.
 - Track progress, downloaded and total size, download and upload speeds, peers, ETA, and current state.
+- Open a five-tab details view for live overview, files, peers, trackers, and torrent metainfo.
 - Pause and resume downloads, retry errors, open a completed download's folder, and remove torrents while keeping their files.
 - Filter active, queued, paused, completed, and failed downloads.
 - Set the default download location, choose whether downloads start and resume automatically, and select System, Dark, or Light theme.
@@ -158,6 +160,14 @@ Open a torrent's **Files** tab to review every file's size, selected/skipped sta
 
 File indexes come from the metainfo's ordered file list and are preserved through preview, rqbit status, live file-progress reporting, and session restoration. Torque uses librqbit's `only_files` when starting and `update_only_files` for later edits, so non-selected files are skipped except for unavoidable piece-boundary data. Selected file indexes are also stored with Torque's lightweight application state and rqbit's session snapshot.
 
+## Torrent details
+
+Select a torrent's name in Downloads or History to open its details window. The **Overview** tab shows the queue's current progress snapshot, selected bytes, transfer speeds, ETA when it can be calculated, ratio, connected peers, added date, destination, and state. **Files** reuses the same searchable, sortable, virtualized file tree and selection-save action as the download workflow.
+
+The **Peers**, **Trackers**, and **Info** tabs request technical metadata once when the detail window opens. Use the refresh button to request a new peer/tracker snapshot; these fields are not polled in the background. Peer addresses are privacy-masked (IPv4 subnet only, IPv6 `/64`, and no port); client identity and lifetime bytes are shown when rqbit provides them. Tracker URLs are read from the managed torrent metadata. Info includes the info hash with a copy button, piece size/count, creation fields, private/public status, input type, and save location when available.
+
+librqbit 9.0.1 does not expose per-peer download/upload rates or completion percentages, tracker announce times or per-tracker peer counts, or a separate seed count through the APIs Torque uses. These values are labeled as unavailable rather than inferred. Torrent input type is stored as a small category (`magnet`, local file, URL, or unknown); the original magnet or URL is not persisted by this feature.
+
 ## Browse and search
 
 Choose **Browse** in the navigation rail to search the configured sources. Filter results by source or category and sort by relevance, newest, size, or seeders when the provider supplies those counts. Choosing a source scopes the backend request to that provider. Use **Show more results** to request the next page. Recent searches are kept on this device and remain available beside results; clear them from Browse at any time.
@@ -182,6 +192,8 @@ The React frontend calls typed Tauri command wrappers. Tauri commands adapt nati
 
 The nested file tree is assembled in a dedicated frontend helper and rendered as a flattened, virtualized view for both pre-download inspection and each transfer's Files tab. `TorrentFilesPanel` owns local edits, search, sort, folder tri-state, and the save action; transfer rows remain coupled to app-level torrent statuses rather than rqbit types.
 
+The compact transfer row opens `TorrentDetailsDialog` by torrent ID. Overview and Files use the queue's existing two-second `TorrentStatus` snapshots, so progress and file selection do not have a second source of truth. Opening the dialog invokes `get_torrent_details` once for the less-frequently-needed peer snapshot and metainfo fields; a manual refresh repeats only that request. The Rust service maps rqbit models into UI-neutral `TorrentDetails` and masks peer addresses before returning them. Static source type is the only added application-state metadata; torrent metainfo remains owned by the rqbit session.
+
 Content discovery is a separate Rust service beside the torrent service. `SearchProvider` defines source identity, icon, capabilities, paged normalized search, details, download-source lookup, and health checks. `SearchService` registers independent provider implementations and aggregates their results without making one provider failure fail the whole search. The Internet Archive adapter uses its documented Advanced Search and Metadata APIs, filters out items without an explicit supported open license, and validates that the corresponding archive torrent file is listed before returning its URL. Tauri exposes typed search, health, cancellation, details, and source commands; it does not pass provider-specific payloads or filesystem access to React.
 
 To add another authorized source, implement `SearchProvider` in `src-tauri/src/discovery/`, map its response to `TorrentSearchResult`, and register it in `SearchService::new`. Prefer a documented API or published feed over page scraping. Keep source URLs constrained to that provider, set explicit timeouts and a descriptive user agent, propagate the cancellation token, report rate limits and health, and add mocked response tests. A new provider does not need changes to the torrent engine or result components unless it introduces a new normalized capability.
@@ -197,9 +209,10 @@ src/
   app/                    App shell, desktop connection, queue and preferences state
   components/             Sidebar, backend status, and toast notifications
   features/discovery/     Browse controls, results, details, recent searches, and provider state
-  features/transfers/     Add/inspection/settings dialogs, virtual file tree, filters, and transfer rows
+  features/transfers/     Add/inspection/settings/details dialogs, virtual file tree, filters, and transfer rows
     torrentPreviewTree.ts Build a nested file model from inspected torrent paths
     TorrentFilesPanel.tsx Searchable, sortable per-torrent file selection and progress
+    TorrentDetailsDialog.tsx Five-tab details view backed by queue snapshots and an on-demand details command
   lib/                    Typed Tauri transfer, discovery, and preference command wrappers
   styles.css              Desktop layout, themes, controls, and responsive rules
 src-tauri/
@@ -225,6 +238,7 @@ pnpm-lock.yaml            Pinned frontend dependency graph
 - There is no system tray or close-to-tray behavior. Closing the window exits the app; the session is restored on the next launch.
 - Removing a torrent keeps its downloaded files. A separate delete-payload action is not implemented.
 - Peer counts and upload speeds are shown when the engine provides them; unavailable values appear as a dash.
+- The details screen shows peer lifetime counters and masked addresses, but the current rqbit API does not provide per-peer speeds/progress, tracker announce timestamps or counts, or a seed-only count.
 - Discovery currently includes only the Internet Archive adapter and filters for explicit CC0 1.0, CC BY 4.0, and CC BY-SA 4.0 license metadata. It does not independently verify rights claims, and it has no seeder/leech counts from that catalog.
 - A dedicated frontend linter and frontend unit-test setup are not configured yet.
 

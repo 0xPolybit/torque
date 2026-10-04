@@ -9,8 +9,8 @@ use crate::discovery::{
     TorrentSearchResponse,
 };
 use crate::torrent::{
-    AppPreferences, DownloadDirectory, TorrentFileSelection, TorrentPreview, TorrentService,
-    TorrentStatus,
+    AppPreferences, DownloadDirectory, TorrentDetails, TorrentFileSelection, TorrentPreview,
+    TorrentService, TorrentStatus,
 };
 
 #[derive(Serialize)]
@@ -193,6 +193,16 @@ pub fn get_torrent_status(
 ) -> Result<TorrentStatus, String> {
     service
         .get_torrent_status(torrent_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn get_torrent_details(
+    service: State<'_, TorrentService>,
+    torrent_id: usize,
+) -> Result<TorrentDetails, String> {
+    service
+        .get_torrent_details(torrent_id)
         .map_err(|error| error.to_string())
 }
 

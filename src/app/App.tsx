@@ -9,6 +9,7 @@ import { EmptyFilter } from "../features/transfers/EmptyFilter";
 import { EmptyQueue } from "../features/transfers/EmptyQueue";
 import { SettingsDialog } from "../features/transfers/SettingsDialog";
 import { TorrentFilters } from "../features/transfers/TorrentFilters";
+import { TorrentDetailsDialog } from "../features/transfers/TorrentDetailsDialog";
 import { TorrentList } from "../features/transfers/TorrentList";
 import { filterTorrents, type TorrentFilter } from "../features/transfers/torrentPresentation";
 import type { TorrentDownloadSource } from "../lib/discovery";
@@ -21,6 +22,7 @@ export default function App() {
   const queue = useTorrentQueue(isConnected);
   const [showAddTorrent, setShowAddTorrent] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [detailsTorrentId, setDetailsTorrentId] = useState<number | null>(null);
   const [currentView, setCurrentView] = useState<AppView>("downloads");
   const viewBeforeSettings = useRef<AppView>("downloads");
   const [discoverySource, setDiscoverySource] = useState<TorrentDownloadSource | null>(null);
@@ -39,6 +41,13 @@ export default function App() {
     () => filterTorrents(queue.torrents, "completed"),
     [queue.torrents],
   );
+  const detailsTorrent = detailsTorrentId === null
+    ? null
+    : queue.torrents.find((torrent) => torrent.id === detailsTorrentId) ?? null;
+
+  useEffect(() => {
+    if (detailsTorrentId !== null && !detailsTorrent) setDetailsTorrentId(null);
+  }, [detailsTorrentId, detailsTorrent]);
 
   function openSettings() {
     if (currentView !== "settings") viewBeforeSettings.current = currentView;
@@ -148,7 +157,7 @@ export default function App() {
                 onRetry={queue.retryTorrent}
                 onRemove={queue.removeTorrent}
                 onOpenFolder={queue.openTorrentFolder}
-                onUpdateFileSelection={queue.updateTorrentFileSelection}
+                onOpenDetails={setDetailsTorrentId}
               />
             </div>
           ) : (
@@ -184,7 +193,7 @@ export default function App() {
                   onRetry={queue.retryTorrent}
                   onRemove={queue.removeTorrent}
                   onOpenFolder={queue.openTorrentFolder}
-                  onUpdateFileSelection={queue.updateTorrentFileSelection}
+                  onOpenDetails={setDetailsTorrentId}
                 />
               )
               : <EmptyFilter filter={filter} />}
@@ -213,6 +222,15 @@ export default function App() {
           onInspectFile={queue.inspectTorrentFile}
           onDiscardPreview={queue.discardTorrentPreview}
           onStartPreview={queue.startInspectedTorrent}
+        />
+      )}
+
+      {detailsTorrent && (
+        <TorrentDetailsDialog
+          torrent={detailsTorrent}
+          action={queue.torrentActions[detailsTorrent.id] ?? { pending: null, error: null }}
+          onClose={() => setDetailsTorrentId(null)}
+          onUpdateFileSelection={queue.updateTorrentFileSelection}
         />
       )}
 

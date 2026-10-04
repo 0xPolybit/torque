@@ -64,7 +64,28 @@ export interface TorrentFile {
 }
 
 export type TorrentState = "queued" | "downloading" | "paused" | "completed" | "error";
+export type TorrentSourceType = "magnet" | "torrent_file" | "torrent_url" | "unknown";
 export type TorrentControlAction = "pause" | "resume" | "retry" | "remove" | "open-folder" | "update-files";
+
+export interface TorrentPeerStatus {
+  address: string;
+  client: string | null;
+  connectionState: string;
+  downloadedBytes: number;
+  uploadedBytes: number;
+}
+
+export interface TorrentDetails {
+  peers: TorrentPeerStatus[] | null;
+  trackers: string[];
+  outputDirectory: string | null;
+  pieceSizeBytes: number | null;
+  torrentCreatedAt: number | null;
+  createdBy: string | null;
+  comment: string | null;
+  isPrivate: boolean | null;
+  sourceType: TorrentSourceType;
+}
 
 export interface TorrentActionState {
   pending: TorrentControlAction | null;
@@ -123,6 +144,10 @@ export function getTorrents(): Promise<TorrentStatus[]> {
 
 export function getTorrentStatus(torrentId: number): Promise<TorrentStatus> {
   return invoke<TorrentStatus>("get_torrent_status", { torrentId });
+}
+
+export function getTorrentDetails(torrentId: number): Promise<TorrentDetails> {
+  return invoke<TorrentDetails>("get_torrent_details", { torrentId });
 }
 
 export function updateTorrentFileSelection(

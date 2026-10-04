@@ -119,6 +119,7 @@ struct PreparedTorrentPreview {
     metainfo: Bytes,
     info_hash: String,
     file_count: usize,
+    source_type: TorrentSourceType,
 }
 
 struct PreviewMetadata {
@@ -139,6 +140,41 @@ pub enum TorrentState {
     Paused,
     Completed,
     Error,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TorrentSourceType {
+    Magnet,
+    TorrentFile,
+    TorrentUrl,
+    #[default]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TorrentPeerStatus {
+    /// The remote address is masked before it leaves the service.
+    pub address: String,
+    pub client: Option<String>,
+    pub connection_state: String,
+    pub downloaded_bytes: u64,
+    pub uploaded_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TorrentDetails {
+    pub peers: Option<Vec<TorrentPeerStatus>>,
+    pub trackers: Vec<String>,
+    pub output_directory: Option<String>,
+    pub piece_size_bytes: Option<u64>,
+    pub torrent_created_at: Option<u64>,
+    pub created_by: Option<String>,
+    pub comment: Option<String>,
+    pub is_private: Option<bool>,
+    pub source_type: TorrentSourceType,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -384,6 +420,7 @@ impl TorrentService {
         self.inspect_source(
             AddTorrent::from_url(magnet_link.as_str()),
             &output_directory,
+            TorrentSourceType::Magnet,
         )
         .await
     }
@@ -398,6 +435,7 @@ impl TorrentService {
         self.inspect_source(
             AddTorrent::from_url(torrent_url.as_str()),
             &output_directory,
+            TorrentSourceType::TorrentUrl,
         )
         .await
     }
@@ -417,8 +455,12 @@ impl TorrentService {
 
         let result = match read_torrent_file(&torrent_path) {
             Ok(bytes) => {
-                self.inspect_source(AddTorrent::from_bytes(bytes), &output_directory)
-                    .await
+                self.inspect_source(
+                    AddTorrent::from_bytes(bytes),
+                    &output_directory,
+                    TorrentSourceType::TorrentFile,
+                )
+                .await
             }
             Err(error) => Err(error),
         };
@@ -436,8 +478,9 @@ impl TorrentService {
         &self,
         source: AddTorrent<'_>,
         output_directory: &Path,
+        source_type: TorrentSourceType,
     ) -> Result<TorrentPreview, TorrentError> {
-        self.inspect_source_with_options(source, inspection_options(output_directory))
+        self.inspect_source_with_options(source, inspection_options(output_directory), source_type)
             .await
     }
 
@@ -445,6 +488,7 @@ impl TorrentService {
         &self,
         source: AddTorrent<'_>,
         options: AddTorrentOptions,
+        source_type: TorrentSourceType,
     ) -> Result<TorrentPreview, TorrentError> {
         let response = self
             .session
@@ -491,6 +535,7 @@ impl TorrentService {
             info_hash: metadata.info_hash.clone(),
             file_count: metadata.files.len(),
             metainfo,
+            source_type,
         };
         self.torrent_previews
             .lock()
@@ -570,12 +615,18 @@ impl TorrentService {
         let id = response.id.ok_or_else(|| {
             TorrentError::Engine("The torrent engine did not start the download.".to_string())
         })?;
-        let status = self.get_torrent_status(id)?;
+        let mut status = self.get_torrent_status(id)?;
         if !status.info_hash.eq_ignore_ascii_case(&prepared.info_hash) {
             return Err(TorrentError::Engine(
                 "The started torrent did not match its inspected metadata.".to_string(),
             ));
         }
+        self.persistence
+            .update_torrent(&mut status, output_directory.clone())
+            .map_err(TorrentError::Persistence)?;
+        self.persistence
+            .update_source_type(&status.info_hash, prepared.source_type)
+            .map_err(TorrentError::Persistence)?;
         self.discard_torrent_preview(preview_id)?;
         Ok(status)
     }
@@ -772,6 +823,99 @@ impl TorrentService {
             .update_torrent(&mut status, output_path)
             .map_err(TorrentError::Persistence)?;
         Ok(status)
+    }
+
+    pub fn get_torrent_details(&self, id: usize) -> Result<TorrentDetails, TorrentError> {
+        let torrent_id = TorrentIdOrHash::parse(&id.to_string())
+            .map_err(|error| TorrentError::Status(error.to_string()))?;
+        let source_type = self
+            .persistence
+            .source_type_for_id(id)
+            .map_err(TorrentError::Persistence)?;
+        let saved_output_path = self
+            .persistence
+            .output_path_for_id(id)
+            .map_err(TorrentError::Persistence)?;
+        let Some(torrent) = self.session.get(torrent_id) else {
+            return Ok(TorrentDetails {
+                peers: None,
+                trackers: Vec::new(),
+                output_directory: saved_output_path.map(|path| path.to_string_lossy().into_owned()),
+                piece_size_bytes: None,
+                torrent_created_at: None,
+                created_by: None,
+                comment: None,
+                is_private: None,
+                source_type,
+            });
+        };
+
+        let peers = self
+            .api
+            .api_peer_stats(torrent_id, Default::default())
+            .ok()
+            .map(|snapshot| {
+                let mut peers: Vec<_> = snapshot
+                    .peers
+                    .into_iter()
+                    .map(|(address, peer)| TorrentPeerStatus {
+                        address: mask_peer_address(&address),
+                        client: peer.client_name,
+                        connection_state: peer.state.to_string(),
+                        downloaded_bytes: peer.counters.fetched_bytes,
+                        uploaded_bytes: peer.counters.uploaded_bytes,
+                    })
+                    .collect();
+                peers.sort_by(|left, right| left.address.cmp(&right.address));
+                peers
+            });
+        let mut trackers: Vec<_> = torrent
+            .shared()
+            .trackers
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        trackers.sort();
+        let metadata = torrent.with_metadata(|metadata| {
+            let parsed = librqbit::torrent_from_bytes(&metadata.torrent_bytes).ok();
+            (
+                Some(metadata.info.info().piece_length as u64),
+                Some(metadata.info.info().private),
+                parsed.as_ref().and_then(|parsed| {
+                    parsed
+                        .creation_date
+                        .map(|seconds| (seconds as u64).saturating_mul(1000))
+                }),
+                parsed.as_ref().and_then(|parsed| {
+                    parsed
+                        .created_by
+                        .as_ref()
+                        .and_then(|bytes| std::str::from_utf8(bytes.as_ref()).ok())
+                        .map(str::to_owned)
+                }),
+                parsed.as_ref().and_then(|parsed| {
+                    parsed
+                        .comment
+                        .as_ref()
+                        .and_then(|bytes| std::str::from_utf8(bytes.as_ref()).ok())
+                        .map(str::to_owned)
+                }),
+            )
+        });
+        let (piece_size_bytes, is_private, torrent_created_at, created_by, comment) =
+            metadata.map_err(|error| TorrentError::MetadataResolution(error.to_string()))?;
+
+        Ok(TorrentDetails {
+            peers,
+            trackers,
+            output_directory: Some(torrent.output_folder().to_string_lossy().into_owned()),
+            piece_size_bytes,
+            torrent_created_at,
+            created_by,
+            comment,
+            is_private,
+            source_type,
+        })
     }
 
     async fn restore_missing_torrents(
@@ -1250,6 +1394,25 @@ fn status_from_parts(
     }
 }
 
+fn mask_peer_address(address: &str) -> String {
+    use std::net::{IpAddr, SocketAddr};
+
+    match address.parse::<SocketAddr>().map(|socket| socket.ip()) {
+        Ok(IpAddr::V4(ip)) => {
+            let octets = ip.octets();
+            format!("{}.{}.{}.*", octets[0], octets[1], octets[2])
+        }
+        Ok(IpAddr::V6(ip)) => {
+            let segments = ip.segments();
+            format!(
+                "{:x}:{:x}:{:x}:{:x}::/64",
+                segments[0], segments[1], segments[2], segments[3]
+            )
+        }
+        Err(_) => "Peer address hidden".to_string(),
+    }
+}
+
 fn torrent_state_from_engine(state: TorrentStatsState, finished: bool) -> TorrentState {
     match state {
         TorrentStatsState::Initializing { paused: true } => TorrentState::Paused,
@@ -1364,6 +1527,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn peer_addresses_are_masked_without_exposing_ports() {
+        assert_eq!(mask_peer_address("192.0.2.47:51413"), "192.0.2.*");
+        assert_eq!(
+            mask_peer_address("[2001:db8:abcd:12::8]:51413"),
+            "2001:db8:abcd:12::/64"
+        );
+        assert_eq!(mask_peer_address("unknown peer"), "Peer address hidden");
+    }
+
     #[tokio::test]
     async fn selected_output_directory_is_used_when_adding_a_local_torrent() {
         let temp = tempfile::tempdir().expect("temporary test directory");
@@ -1463,6 +1636,16 @@ mod tests {
             .start_inspected_torrent(&preview.preview_id, &selected.id, &[0])
             .await
             .expect("start inspected torrent");
+        let details = service
+            .get_torrent_details(added.id)
+            .expect("read torrent technical details");
+        assert_eq!(details.piece_size_bytes, Some(16_384));
+        assert_eq!(details.is_private, Some(false));
+        assert_eq!(details.source_type, TorrentSourceType::TorrentFile);
+        assert_eq!(
+            PathBuf::from(details.output_directory.as_deref().expect("saved location")),
+            fs::canonicalize(&selected_directory).expect("canonical selected folder")
+        );
 
         assert_eq!(
             service
@@ -1910,6 +2093,7 @@ mod tests {
                     initial_peers: Some(vec![peer]),
                     ..AddTorrentOptions::default()
                 },
+                TorrentSourceType::Magnet,
             ),
         )
         .await
@@ -2074,6 +2258,19 @@ mod tests {
         assert_eq!(restored_completed.state, TorrentState::Completed);
         assert_eq!(restored_completed.completed_at, completed_at);
         assert_eq!(restored_completed.id, completed_id);
+        let restored_details = restored_service
+            .get_torrent_details(restored_pending.id)
+            .expect("read restored torrent details");
+        assert_eq!(restored_details.source_type, TorrentSourceType::TorrentFile);
+        assert_eq!(
+            PathBuf::from(
+                restored_details
+                    .output_directory
+                    .as_deref()
+                    .expect("restored output path")
+            ),
+            fs::canonicalize(&selected_directory).expect("canonical selected folder")
+        );
         assert_eq!(
             restored_service
                 .torrent_output_directory(restored_pending.id)

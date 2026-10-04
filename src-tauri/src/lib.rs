@@ -41,6 +41,7 @@ pub fn run() {
             commands::discard_torrent_preview,
             commands::get_torrents,
             commands::get_torrent_status,
+            commands::get_torrent_details,
             commands::update_torrent_file_selection,
             commands::pause_torrent,
             commands::resume_torrent,
