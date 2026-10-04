@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#0d100f" />
+  <path d="M0 500h1200" stroke="#252d29" />
+  <rect x="89" y="108" width="64" height="64" rx="18" fill="#111614" stroke="#39443d" />
+  <path d="M100 141h12l8-15 12 30 9-16h13" fill="none" stroke="#b7e98b" stroke-linecap="round" stroke-linejoin="round" stroke-width="4" />
+  <text x="180" y="153" fill="#e6ece8" font-family="Inter, Segoe UI, sans-serif" font-size="34" font-weight="650">Torque</text>
+  <text x="88" y="302" fill="#e6ece8" font-family="Inter, Segoe UI, sans-serif" font-size="74" font-weight="650" letter-spacing="-3">Downloads, without</text>
+  <text x="88" y="388" fill="#e6ece8" font-family="Inter, Segoe UI, sans-serif" font-size="74" font-weight="650" letter-spacing="-3">the clutter.</text>
+  <text x="92" y="448" fill="#a2ada6" font-family="Inter, Segoe UI, sans-serif" font-size="22">See every file before the transfer starts.</text>
+  <rect x="894" y="451" width="218" height="96" rx="17" fill="#111614" stroke="#252d29" />
+  <path d="M918 498h35l17-30 23 58 15-29h45" fill="none" stroke="#b7e98b" stroke-linecap="round" stroke-linejoin="round" stroke-width="6" />
+</svg>

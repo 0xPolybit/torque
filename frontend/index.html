@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0d100f" />
+    <meta name="description" content="Meet Torque: a thoughtful desktop BitTorrent client. Inspect every file, choose what to download, and manage transfers in one calm workspace." />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Torque" />
+    <meta property="og:title" content="Torque — Downloads, without the clutter" />
+    <meta property="og:description" content="A thoughtful desktop BitTorrent client. Inspect every file before you download." />
+    <meta property="og:image" content="/og-image.svg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Torque — Downloads, without the clutter" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Torque — Downloads, without the clutter" />
+    <meta name="twitter:description" content="A thoughtful desktop BitTorrent client. Inspect every file before you download." />
+    <meta name="twitter:image" content="/og-image.svg" />
+    <meta name="twitter:image:alt" content="Torque — Downloads, without the clutter" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <title>Torque — Downloads, without the clutter</title>
+    <script>
+      try {
+        const theme = localStorage.getItem("torque-site-theme");
+        if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+      } catch {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

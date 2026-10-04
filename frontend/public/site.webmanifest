@@ -1,0 +1,10 @@
+{
+  "name": "Torque",
+  "short_name": "Torque",
+  "description": "A thoughtful desktop BitTorrent client.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d100f",
+  "theme_color": "#0d100f",
+  "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

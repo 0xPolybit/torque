@@ -34,6 +34,7 @@ Torque is a cross-platform desktop BitTorrent client built with a Tauri shell, a
 - [Architecture](#architecture)
 - [Security](#security)
 - [Project structure](#project-structure)
+- [Marketing and documentation website](#marketing-and-documentation-website)
 - [Known limitations](#known-limitations)
 - [Troubleshooting](#troubleshooting)
 - [Legal use](#legal-use)
@@ -271,12 +272,44 @@ src-tauri/
                           Versioned application preferences and queue metadata
   src/lib.rs              Service setup and command registration
   tauri.conf.json         Product metadata, window, security, and bundle settings
+frontend/
+  public/                  Website favicon, social graphic, manifest, robots, host rewrites
+  src/
+    components/            Shared layout, docs UI, marketing previews, and interface primitives
+    content/docs.ts        Data-driven documentation catalog
+    pages/                 Marketing, download, changelog, and docs routes
+    styles.css             Website themes, product mockups, and responsive layouts
+  package.json             Independent website development/build scripts
+  package-lock.json        Reproducible website dependency lock
 README.md                 Project and developer guide
+frontend/README.md        Standalone marketing and documentation website guide
 DESIGN.md                 Visual-system notes
 PRODUCT.md                Product context
 package.json              Frontend scripts and dependencies
 pnpm-lock.yaml            Pinned frontend dependency graph
 ```
+
+## Marketing and documentation website
+
+The independent static site in [`frontend/`](frontend/) contains Torque’s product pages and searchable, data-driven documentation. It uses React, TypeScript, Vite, Tailwind CSS 4, and React Router. The website does not start the Tauri shell or Rust backend. Product-interface examples use labeled sample values, and download buttons lead to the actual GitHub Releases page rather than hosted or simulated installers.
+
+To run or build the website, install Node.js 22.12 or newer, then run these commands from the repository root:
+
+```sh
+cd frontend
+npm ci
+npm run dev
+```
+
+Vite serves the site at `http://127.0.0.1:5173`. To check TypeScript, create a production build, and preview it locally:
+
+```sh
+npm run typecheck
+npm run build
+npm run preview
+```
+
+The static output is `frontend/dist/`. Static hosts must rewrite clean route requests to `/index.html`; a Netlify rewrite file is included. See [`frontend/README.md`](frontend/README.md) for the pages, source organization, and deployment notes.
 
 ## Known limitations
 
