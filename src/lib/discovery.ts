@@ -34,6 +34,7 @@ export type SearchCategory = "software" | "datasets" | "media";
 
 export interface SearchFilters {
   category: SearchCategory | null;
+  providerId: string | null;
 }
 
 export interface TorrentSearchResult {
@@ -45,6 +46,7 @@ export interface TorrentSearchResult {
   sizeBytes: number | null;
   seeders: number | null;
   leechers: number | null;
+  infoHash: string | null;
   publishedAt: string | null;
   magnetUri: string | null;
   torrentUrl: string | null;

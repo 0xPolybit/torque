@@ -1,13 +1,19 @@
-import { useState, type FormEvent } from "react";
-import { Archive, ArrowDownToLine, ChevronDown, CircleAlert, LoaderCircle, Search, ShieldCheck, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { Archive, CircleAlert, LoaderCircle } from "lucide-react";
 import {
+  getTorrentSearchDetails,
   getTorrentSearchSource,
   type SearchCategory,
-  type SearchProviderHealthState,
   type TorrentDownloadSource,
+  type TorrentSearchDetails,
   type TorrentSearchResult,
 } from "../../lib/discovery";
 import { describeError } from "../../lib/desktop";
+import { BrowseDetailsPanel } from "./BrowseDetailsPanel";
+import { BrowseResults, BrowseResultsSkeleton } from "./BrowseResults";
+import { BrowseSearchBar, type BrowseSort } from "./BrowseSearchBar";
+import { BrowseSearchHistory } from "./BrowseSearchHistory";
+import { useRecentSearches } from "./useRecentSearches";
 import { useTorrentSearch } from "./useTorrentSearch";
 
 interface DiscoveryViewProps {
@@ -15,239 +21,246 @@ interface DiscoveryViewProps {
   onReviewSource: (source: TorrentDownloadSource) => void;
 }
 
-const categories: { value: SearchCategory | null; label: string }[] = [
-  { value: null, label: "All open content" },
-  { value: "software", label: "Software" },
-  { value: "datasets", label: "Datasets" },
-  { value: "media", label: "Media" },
-];
-
-function formatBytes(bytes: number | null): string {
-  if (bytes === null || !Number.isFinite(bytes) || bytes < 0) return "Size unavailable";
-  if (bytes === 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
-  const unit = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  const amount = bytes / 1024 ** unit;
-  return `${amount.toLocaleString(undefined, { maximumFractionDigits: amount >= 100 ? 0 : 1 })} ${units[unit]}`;
+function sortResults(results: TorrentSearchResult[], sort: BrowseSort): TorrentSearchResult[] {
+  if (sort === "relevance") return results;
+  return results.map((result, index) => ({ result, index })).sort((left, right) => {
+    let comparison = 0;
+    if (sort === "newest") {
+      const leftDate = left.result.publishedAt ? Date.parse(left.result.publishedAt) : Number.NaN;
+      const rightDate = right.result.publishedAt ? Date.parse(right.result.publishedAt) : Number.NaN;
+      const leftHasDate = !Number.isNaN(leftDate);
+      const rightHasDate = !Number.isNaN(rightDate);
+      if (leftHasDate && !rightHasDate) return -1;
+      if (!leftHasDate && rightHasDate) return 1;
+      if (leftHasDate && rightHasDate) comparison = rightDate - leftDate;
+    } else {
+      const field = sort === "size" ? "sizeBytes" : "seeders";
+      const leftValue = left.result[field];
+      const rightValue = right.result[field];
+      if (leftValue === null && rightValue !== null) return 1;
+      if (rightValue === null && leftValue !== null) return -1;
+      comparison = (rightValue ?? 0) - (leftValue ?? 0);
+    }
+    return comparison || left.index - right.index;
+  }).map(({ result }) => result);
 }
 
-function licenseName(license: string | null): string {
-  if (!license) return "Open license";
-  try {
-    const url = new URL(license);
-    return url.pathname.split("/").filter(Boolean).slice(-2).join(" ").replaceAll("-", " ").toUpperCase();
-  } catch {
-    return license;
-  }
-}
-
-function healthLabel(state: SearchProviderHealthState): string {
-  switch (state) {
-    case "healthy": return "Available";
-    case "degraded": return "Degraded";
-    case "unavailable": return "Unavailable";
-    case "rate_limited": return "Rate limited";
-    default: return "Checking";
-  }
-}
-
-function categoryName(category: string | null): string {
-  if (category === "datasets") return "Dataset";
-  if (category === "media") return "Media";
-  if (category === "software") return "Software";
-  return "Open content";
-}
-
-function ResultRow({
-  result,
-  providerName,
-  busy,
-  error,
-  onReview,
-}: {
-  result: TorrentSearchResult;
-  providerName: string;
-  busy: boolean;
-  error: string;
-  onReview: (result: TorrentSearchResult) => void;
-}) {
-  return (
-    <article className="discovery-result">
-      <div className="discovery-result__icon" aria-hidden="true"><Archive size={16} strokeWidth={1.8} /></div>
-      <div className="discovery-result__main">
-        <div className="discovery-result__titleline">
-          <h2 title={result.title}>{result.title || result.id}</h2>
-          {result.verified === true && <span className="discovery-result__verified" title="Verified by source"><ShieldCheck size={13} /> Verified</span>}
-        </div>
-        {result.description && <p className="discovery-result__description">{result.description}</p>}
-        <div className="discovery-result__metadata">
-          <span>{categoryName(result.category)}</span>
-          <span>{formatBytes(result.sizeBytes)}</span>
-          <span title={result.license ?? undefined}>{licenseName(result.license)}</span>
-          <span>{providerName}</span>
-          {result.publishedAt && <span>{result.publishedAt}</span>}
-        </div>
-        {error && <p className="discovery-result__error" role="alert">{error}</p>}
-      </div>
-      <button
-        className="secondary-button discovery-result__action"
-        type="button"
-        onClick={() => onReview(result)}
-        disabled={busy}
-        aria-label={`Inspect files for ${result.title}`}
-      >
-        {busy
-          ? <LoaderCircle size={14} className="is-spinning" aria-hidden="true" />
-          : <ArrowDownToLine size={14} aria-hidden="true" />}
-        {busy ? "Preparing…" : "Inspect files"}
-      </button>
-    </article>
-  );
+function resultKey(result: TorrentSearchResult): string {
+  return `${result.provider}:${result.id}`;
 }
 
 export function DiscoveryView({ enabled, onReviewSource }: DiscoveryViewProps) {
   const search = useTorrentSearch(enabled);
+  const recent = useRecentSearches();
   const [query, setQuery] = useState("");
   const [submittedQuery, setSubmittedQuery] = useState("");
   const [category, setCategory] = useState<SearchCategory | null>(null);
-  const [activeResult, setActiveResult] = useState("");
-  const [resultErrors, setResultErrors] = useState<Record<string, string>>({});
+  const [providerId, setProviderId] = useState("");
+  const [sort, setSort] = useState<BrowseSort>("relevance");
+  const [selectedResult, setSelectedResult] = useState<TorrentSearchResult | null>(null);
+  const [details, setDetails] = useState<TorrentSearchDetails | null>(null);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [detailsError, setDetailsError] = useState("");
+  const [detailsRevision, setDetailsRevision] = useState(0);
+  const [inspecting, setInspecting] = useState(false);
+  const detailsRequest = useRef(0);
+
+  useEffect(() => {
+    if (!selectedResult) {
+      setDetails(null);
+      setDetailsError("");
+      setDetailsLoading(false);
+      return;
+    }
+    let current = true;
+    const request = ++detailsRequest.current;
+    setDetails(null);
+    setDetailsError("");
+    setDetailsLoading(true);
+    getTorrentSearchDetails(selectedResult.provider, selectedResult.id)
+      .then((response) => {
+        if (current && request === detailsRequest.current) setDetails(response);
+      })
+      .catch((cause: unknown) => {
+        if (current && request === detailsRequest.current) setDetailsError(describeError(cause));
+      })
+      .finally(() => {
+        if (current && request === detailsRequest.current) setDetailsLoading(false);
+      });
+    return () => { current = false; };
+  }, [selectedResult?.provider, selectedResult?.id, detailsRevision]);
+
+  const providerById = useMemo(
+    () => new Map(search.providers.map((provider) => [provider.id, provider.name])),
+    [search.providers],
+  );
+  const filteredResults = useMemo(() => {
+    const filtered = providerId
+      ? search.results.filter((result) => result.provider === providerId)
+      : search.results;
+    return sortResults(filtered, sort);
+  }, [providerId, search.results, sort]);
+  const hasSeederData = search.results.some((result) => result.seeders !== null);
+  const selectedKey = selectedResult ? resultKey(selectedResult) : null;
+  const providerWarnings = search.providerStatuses.filter(({ health }) => health.state !== "healthy");
+
+  function runQuery(term: string, nextCategory = category, nextProvider = providerId) {
+    const normalized = term.trim();
+    if (!normalized) return;
+    setQuery(normalized);
+    setSubmittedQuery(normalized);
+    setSelectedResult(null);
+    setDetails(null);
+    setDetailsError("");
+    recent.remember(normalized);
+    void search.runSearch(normalized, {
+      category: nextCategory,
+      providerId: nextProvider || null,
+    });
+  }
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const term = query.trim();
-    if (!term || search.loading) return;
-    setSubmittedQuery(term);
-    setResultErrors({});
-    void search.runSearch(term, category);
+    if (!search.loading) runQuery(query);
   }
 
-  async function inspectResult(result: TorrentSearchResult) {
-    const key = `${result.provider}:${result.id}`;
-    setActiveResult(key);
-    setResultErrors((current) => ({ ...current, [key]: "" }));
+  function changeCategory(next: SearchCategory | null) {
+    setCategory(next);
+    if (submittedQuery) runQuery(submittedQuery, next);
+  }
+
+  function retryDetails() {
+    setDetailsRevision((revision) => revision + 1);
+  }
+
+  async function inspectTorrent(item: TorrentSearchDetails) {
+    setInspecting(true);
+    setDetailsError("");
     try {
-      const source = await getTorrentSearchSource(result.provider, result.id);
+      const source = await getTorrentSearchSource(item.result.provider, item.result.id);
       onReviewSource(source);
     } catch (cause) {
-      setResultErrors((current) => ({ ...current, [key]: describeError(cause) }));
+      setDetailsError(describeError(cause));
     } finally {
-      setActiveResult("");
+      setInspecting(false);
     }
   }
 
-  const providerById = new Map(search.providers.map((provider) => [provider.id, provider.name]));
-
   return (
-    <section className="discovery-view" aria-label="Authorized content discovery">
-      <form className="discovery-search" onSubmit={submit}>
-        <label className="visually-hidden" htmlFor="discovery-query">Search open-licensed content</label>
-        <Search size={17} aria-hidden="true" />
-        <input
-          id="discovery-query"
-          type="search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search open software, datasets, and media"
-          autoComplete="off"
-          maxLength={160}
-          disabled={search.loading}
-        />
-        <label className="visually-hidden" htmlFor="discovery-category">Content category</label>
-        <span className="discovery-search__select-wrap">
-          <select
-            id="discovery-category"
-            value={category ?? "all"}
-            onChange={(event) => setCategory(event.target.value === "all" ? null : event.target.value as SearchCategory)}
-            disabled={search.loading}
-          >
-            {categories.map((option) => <option key={option.value ?? "all"} value={option.value ?? "all"}>{option.label}</option>)}
-          </select>
-          <ChevronDown size={13} aria-hidden="true" />
-        </span>
-        {search.loading ? (
-          <button className="secondary-button discovery-search__submit" type="button" onClick={() => void search.cancelSearch()}>
-            <X size={14} aria-hidden="true" /> Cancel
-          </button>
-        ) : (
-          <button className="primary-button discovery-search__submit" type="submit" disabled={!query.trim()}>
-            <Search size={14} aria-hidden="true" /> Search
-          </button>
-        )}
-      </form>
+    <section className="browse-view" aria-label="Browse authorized open content">
+      <BrowseSearchBar
+        query={query}
+        category={category}
+        providerId={providerId}
+        sort={sort}
+        providers={search.providers}
+        hasSeederData={hasSeederData}
+        enabled={enabled}
+        loading={search.loading}
+        onQueryChange={setQuery}
+        onCategoryChange={changeCategory}
+        onProviderChange={(nextProvider) => {
+          setProviderId(nextProvider);
+          if (submittedQuery) runQuery(submittedQuery, category, nextProvider);
+          if (!nextProvider || selectedResult?.provider !== nextProvider) setSelectedResult(null);
+        }}
+        onSortChange={setSort}
+        onSubmit={submit}
+        onCancel={() => void search.cancelSearch()}
+      />
 
-      <div className="discovery-source-strip" aria-label="Search sources">
-        <div className="discovery-source-strip__label"><span /> Authorized sources</div>
-        <div className="discovery-provider-list">
-          {search.providers.map((provider) => (
-            <span className={`discovery-provider discovery-provider--${provider.health.state}`} key={provider.id} title={provider.health.message ?? provider.name}>
-              <Archive size={13} aria-hidden="true" />
-              {provider.name}
-              <span className="discovery-provider__health">{healthLabel(provider.health.state)}</span>
-            </span>
-          ))}
-          {search.providers.length === 0 && <span className="discovery-provider-list__loading">Checking available catalogs…</span>}
-        </div>
-        <p>Your query is sent to Internet Archive. Only explicitly open-licensed items are listed; check each item’s terms before downloading.</p>
+      <div className="browse-provider-note">
+        <span className="browse-provider-note__indicator" aria-hidden="true" />
+        <span>Open-licensed catalogs</span>
+        {search.providers.map((provider) => (
+          <span className={`browse-provider-note__source browse-provider-note__source--${provider.health.state}`} key={provider.id} title={provider.health.message ?? provider.name}>
+            <Archive size={12} aria-hidden="true" /> {provider.name}
+          </span>
+        ))}
+        <span className="browse-provider-note__privacy">Search terms are sent to the selected catalog source(s).</span>
       </div>
 
-      {search.error && <div className="discovery-error" role="alert"><CircleAlert size={15} />{search.error}</div>}
-      {search.providerStatuses.some(({ health }) => health.state !== "healthy") && search.providerStatuses.length > 0 && (
-        <div className="discovery-provider-warning" role="status">
-          {search.providerStatuses
-            .filter(({ health }) => health.state !== "healthy")
-            .map(({ providerId, health }) => `${providerById.get(providerId) ?? providerId}: ${health.message ?? healthLabel(health.state)}`)
-            .join(" · ")}
+      {search.error && <div className="browse-alert" role="alert"><CircleAlert size={14} aria-hidden="true" />{search.error}</div>}
+      {providerWarnings.length > 0 && submittedQuery && (
+        <div className="browse-alert browse-alert--warning" role="status">
+          <CircleAlert size={14} aria-hidden="true" />
+          {providerWarnings.map(({ providerId: id, health }) => `${providerById.get(id) ?? id}: ${health.message ?? health.state}`).join(" · ")}
         </div>
       )}
 
-      <div className="discovery-results-heading">
-        <h2>{submittedQuery ? `Results for “${submittedQuery}”` : "Discover content"}</h2>
-        {submittedQuery && <span>{search.results.length} {search.results.length === 1 ? "result" : "results"}</span>}
-      </div>
+      <BrowseSearchHistory
+        searches={recent.searches}
+        onChoose={(term) => runQuery(term)}
+        onClear={recent.clear}
+      />
 
-      {search.loading && search.results.length === 0 ? (
-        <div className="discovery-state" role="status"><LoaderCircle className="is-spinning" size={19} /><span>Searching authorized catalogs…</span></div>
-      ) : search.results.length > 0 ? (
-        <div className="discovery-results" aria-live="polite">
-          {search.results.map((result) => {
-            const key = `${result.provider}:${result.id}`;
-            return (
-              <ResultRow
-                key={key}
-                result={result}
-                providerName={providerById.get(result.provider) ?? result.provider}
-                busy={activeResult === key}
-                error={resultErrors[key] ?? ""}
-                onReview={(item) => void inspectResult(item)}
+      <div className={`browse-content${selectedResult ? " has-details" : ""}`}>
+        <div className="browse-main-column">
+          {submittedQuery ? (
+            <div className="browse-results-heading">
+              <h2>Results for <span>“{submittedQuery}”</span></h2>
+              {!search.loading && <span>{filteredResults.length} shown</span>}
+            </div>
+          ) : null}
+
+          {search.loading && search.results.length === 0 ? (
+            <BrowseResultsSkeleton />
+          ) : filteredResults.length > 0 ? (
+            <div className="browse-results-wrap">
+              <BrowseResults
+                results={filteredResults}
+                selectedKey={selectedKey}
+                providers={providerById}
+                onSelect={setSelectedResult}
               />
-            );
-          })}
-          {search.hasMore && (
-            <button
-              className="secondary-button discovery-load-more"
-              type="button"
-              disabled={search.loading}
-              onClick={() => search.loadMore(submittedQuery, category)}
-            >
-              {search.loading ? <LoaderCircle className="is-spinning" size={14} /> : null}
-              {search.loading ? "Loading…" : "Load more"}
-            </button>
+              {search.hasMore && (
+                <button
+                  className="secondary-button browse-load-more"
+                  type="button"
+                  disabled={search.loading}
+                  onClick={() => search.loadMore(submittedQuery, { category, providerId: providerId || null })}
+                >
+                  {search.loading ? <LoaderCircle size={14} className="is-spinning" aria-hidden="true" /> : null}
+                  {search.loading ? "Loading more…" : "Show more results"}
+                </button>
+              )}
+            </div>
+          ) : submittedQuery && !search.loading ? (
+            <div className="browse-empty" role="status">
+              <div className="browse-empty__icon"><Archive size={19} aria-hidden="true" /></div>
+              <strong>{providerId ? "No results from this source" : "No openly licensed results found"}</strong>
+              <span>{providerId ? "Try All Sources or continue through the available pages." : "Try a broader term or choose another category."}</span>
+              {search.hasMore && (
+                <button className="secondary-button browse-empty__more" type="button" onClick={() => search.loadMore(submittedQuery, { category, providerId: providerId || null })}>
+                  Show more results
+                </button>
+              )}
+            </div>
+          ) : (
+            <>
+              <div className="browse-welcome">
+                <div className="browse-welcome__mark" aria-hidden="true"><Archive size={21} strokeWidth={1.7} /></div>
+                <h2>Browse with confidence</h2>
+                <p>Search authorized open software, datasets, and media. Review source details before inspecting any files.</p>
+              </div>
+            </>
           )}
         </div>
-      ) : submittedQuery && !search.loading ? (
-        <div className="discovery-state discovery-state--empty">
-          <div className="discovery-state__icon"><Archive size={19} /></div>
-          <strong>No openly licensed results found</strong>
-          <span>Try a broader term or choose a different category.</span>
-        </div>
-      ) : (
-        <div className="discovery-state discovery-state--empty">
-          <div className="discovery-state__icon"><Search size={18} /></div>
-          <strong>Find something worth sharing</strong>
-          <span>Search the connected catalog for open software, datasets, and licensed media.</span>
-        </div>
-      )}
+
+        {selectedResult && (
+          <BrowseDetailsPanel
+            result={selectedResult}
+            details={details}
+            providerName={providerById.get(selectedResult.provider) ?? selectedResult.provider}
+            loading={detailsLoading}
+            error={detailsError}
+            inspecting={inspecting}
+            onClose={() => setSelectedResult(null)}
+            onRetry={retryDetails}
+            onInspect={(item) => void inspectTorrent(item)}
+          />
+        )}
+      </div>
     </section>
   );
 }

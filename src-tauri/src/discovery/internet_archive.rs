@@ -229,6 +229,7 @@ impl SearchProvider for InternetArchiveProvider {
                 .or_else(|| metadata.metadata.value_u64("size")),
             seeders: None,
             leechers: None,
+            info_hash: None,
             published_at: metadata
                 .metadata
                 .text("publicdate")
@@ -343,6 +344,7 @@ fn normalize_search_doc(doc: ArchiveSearchDoc) -> Option<TorrentSearchResult> {
         size_bytes: doc.item_size.and_then(value_u64),
         seeders: None,
         leechers: None,
+        info_hash: None,
         published_at: doc
             .public_date
             .as_ref()
@@ -606,6 +608,7 @@ mod tests {
             "Linux \"image\"",
             &SearchFilters {
                 category: Some("software".to_string()),
+                provider_id: None,
             },
         );
         assert!(query.contains("\\\"image\\\""));

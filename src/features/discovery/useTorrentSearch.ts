@@ -3,7 +3,7 @@ import {
   cancelTorrentSearch,
   refreshSearchProviderHealth,
   searchTorrents,
-  type SearchCategory,
+  type SearchFilters,
   type SearchProviderInfo,
   type SearchProviderStatus,
   type TorrentSearchResult,
@@ -55,7 +55,7 @@ export function useTorrentSearch(enabled: boolean) {
 
   const runSearch = useCallback(async (
     query: string,
-    category: SearchCategory | null,
+    filters: SearchFilters,
     nextPage = 1,
     append = false,
   ) => {
@@ -82,7 +82,7 @@ export function useTorrentSearch(enabled: boolean) {
     }
 
     try {
-      const response = await searchTorrents(id, query, nextPage, { category });
+      const response = await searchTorrents(id, query, nextPage, filters);
       if (activeSearchId.current !== id || currentSequence !== sequence.current) return;
       if (response.cancelled) return;
       setResults((current) => {
@@ -105,9 +105,9 @@ export function useTorrentSearch(enabled: boolean) {
     }
   }, []);
 
-  const loadMore = useCallback((query: string, category: SearchCategory | null) => {
+  const loadMore = useCallback((query: string, filters: SearchFilters) => {
     if (loading || !hasMore || page < 1) return;
-    void runSearch(query, category, page + 1, true);
+    void runSearch(query, filters, page + 1, true);
   }, [hasMore, loading, page, runSearch]);
 
   return {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Settings2 } from "lucide-react";
 import { Sidebar, type AppView } from "../components/Sidebar";
 import { BackendStatus } from "../components/BackendStatus";
@@ -22,6 +22,7 @@ export default function App() {
   const [showAddTorrent, setShowAddTorrent] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [currentView, setCurrentView] = useState<AppView>("downloads");
+  const viewBeforeSettings = useRef<AppView>("downloads");
   const [discoverySource, setDiscoverySource] = useState<TorrentDownloadSource | null>(null);
   const [filter, setFilter] = useState<TorrentFilter>("all");
   const visibleTorrents = useMemo(
@@ -34,6 +35,24 @@ export default function App() {
   const completedCount = queue.torrents.filter((torrent) =>
     torrent.state === "completed" || torrent.progressPercent >= 100,
   ).length;
+  const historyTorrents = useMemo(
+    () => filterTorrents(queue.torrents, "completed"),
+    [queue.torrents],
+  );
+
+  function openSettings() {
+    if (currentView !== "settings") viewBeforeSettings.current = currentView;
+    setCurrentView("settings");
+    setShowSettings(true);
+  }
+
+  function navigate(view: AppView) {
+    if (view === "settings") {
+      openSettings();
+      return;
+    }
+    setCurrentView(view);
+  }
 
   useEffect(() => {
     const systemTheme = window.matchMedia("(prefers-color-scheme: light)");
@@ -53,17 +72,23 @@ export default function App() {
       <Sidebar
         connection={connection}
         torrentCount={queue.torrents.length}
+        completedCount={completedCount}
+        settingsEnabled={isConnected && queue.preferencesLoaded}
         currentView={currentView}
-        onNavigate={setCurrentView}
+        onNavigate={navigate}
       />
 
       <main className="workspace">
         <header className="workspace__header">
           <div>
-            <h1>{currentView === "discover" ? "Discover" : "Downloads"}</h1>
-            <p>{currentView === "discover"
-              ? "Browse authorized open-licensed content"
-              : queue.torrents.length === 0
+            <h1>{currentView === "browse" ? "Browse" : currentView === "history" ? "History" : currentView === "settings" ? "Settings" : "Downloads"}</h1>
+            <p>{currentView === "browse"
+              ? "Find open-licensed content to inspect"
+              : currentView === "history"
+                ? `${completedCount} completed ${completedCount === 1 ? "download" : "downloads"}`
+                : currentView === "settings"
+                  ? "Application preferences"
+                  : queue.torrents.length === 0
                 ? "Your local transfer library"
                 : `${activeCount} active · ${completedCount} completed`}</p>
           </div>
@@ -84,7 +109,7 @@ export default function App() {
             <button
               className="icon-button workspace__settings"
               type="button"
-              onClick={() => setShowSettings(true)}
+              onClick={openSettings}
               aria-label="Open settings"
               title="Settings"
               disabled={!isConnected || !queue.preferencesLoaded}
@@ -98,7 +123,7 @@ export default function App() {
           <div className="queue-error" role="alert">{queue.error}</div>
         )}
 
-        {currentView === "discover" ? (
+        {currentView === "browse" ? (
           <DiscoveryView
             enabled={isConnected}
             onReviewSource={(source) => {
@@ -107,6 +132,30 @@ export default function App() {
               setShowAddTorrent(true);
             }}
           />
+        ) : currentView === "history" ? (
+          queue.initialLoading && isConnected && historyTorrents.length === 0 ? (
+            <section className="queue-panel queue-loading" role="status" aria-live="polite">
+              <span className="queue-loading__spinner" aria-hidden="true" />
+              <span>Loading download history…</span>
+            </section>
+          ) : historyTorrents.length > 0 ? (
+            <div className="workspace__library workspace__library--history">
+              <TorrentList
+                torrents={historyTorrents}
+                actions={queue.torrentActions}
+                onPause={queue.pauseTorrent}
+                onResume={queue.resumeTorrent}
+                onRetry={queue.retryTorrent}
+                onRemove={queue.removeTorrent}
+                onOpenFolder={queue.openTorrentFolder}
+                onUpdateFileSelection={queue.updateTorrentFileSelection}
+              />
+            </div>
+          ) : (
+            <EmptyFilter filter="completed" />
+          )
+        ) : currentView === "settings" ? (
+          <section className="queue-panel queue-loading" aria-hidden="true" />
         ) : queue.initialLoading && isConnected && queue.torrents.length === 0 ? (
           <section className="queue-panel queue-loading" role="status" aria-live="polite">
             <span className="queue-loading__spinner" aria-hidden="true" />
@@ -177,7 +226,10 @@ export default function App() {
           selectingDirectory={queue.selectingDirectory}
           onChooseDirectory={queue.chooseDirectory}
           onPreferencesChange={queue.updatePreferences}
-          onClose={() => setShowSettings(false)}
+          onClose={() => {
+            setShowSettings(false);
+            setCurrentView(viewBeforeSettings.current);
+          }}
         />
       )}
 

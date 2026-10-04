@@ -1,11 +1,13 @@
-import { Activity, FolderDown, ListMusic, Search } from "lucide-react";
+import { Activity, Archive, Compass, FolderDown, ListMusic, Settings2 } from "lucide-react";
 import type { DesktopConnection } from "../app/useDesktopConnection";
 
-export type AppView = "downloads" | "discover";
+export type AppView = "downloads" | "browse" | "history" | "settings";
 
 interface SidebarProps {
   connection: DesktopConnection;
   torrentCount: number;
+  completedCount: number;
+  settingsEnabled: boolean;
   currentView: AppView;
   onNavigate: (view: AppView) => void;
 }
@@ -15,7 +17,7 @@ function folderName(path: string): string {
   return parts.at(-1) || path;
 }
 
-export function Sidebar({ connection, torrentCount, currentView, onNavigate }: SidebarProps) {
+export function Sidebar({ connection, torrentCount, completedCount, settingsEnabled, currentView, onNavigate }: SidebarProps) {
   const info = connection.state === "connected" ? connection.info : null;
 
   return (
@@ -42,15 +44,43 @@ export function Sidebar({ connection, torrentCount, currentView, onNavigate }: S
           </span>
         </button>
         <button
-          className={`sidebar__nav-item${currentView === "discover" ? " is-current" : ""}`}
+          className={`sidebar__nav-item${currentView === "browse" ? " is-current" : ""}`}
           type="button"
-          aria-label="Discover open-licensed content"
-          aria-current={currentView === "discover" ? "page" : undefined}
-          title="Discover"
-          onClick={() => onNavigate("discover")}
+          aria-current={currentView === "browse" ? "page" : undefined}
+          title="Browse"
+          onClick={() => onNavigate("browse")}
         >
-          <Search size={17} strokeWidth={1.8} aria-hidden="true" />
-          <span>Discover</span>
+          <Compass size={17} strokeWidth={1.8} aria-hidden="true" />
+          <span>Browse</span>
+        </button>
+        <button
+          className={`sidebar__nav-item${currentView === "history" ? " is-current" : ""}`}
+          type="button"
+          aria-label={`History, ${completedCount} completed downloads`}
+          aria-current={currentView === "history" ? "page" : undefined}
+          title="History"
+          onClick={() => onNavigate("history")}
+        >
+          <Archive size={17} strokeWidth={1.8} aria-hidden="true" />
+          <span>History</span>
+          <span className="sidebar__count" aria-label={`${completedCount} completed downloads`}>
+            {completedCount}
+          </span>
+        </button>
+      </nav>
+
+      <nav className="sidebar__navigation sidebar__navigation--preferences" aria-label="Preferences">
+        <span className="sidebar__section-label">Preferences</span>
+        <button
+          className={`sidebar__nav-item${currentView === "settings" ? " is-current" : ""}`}
+          type="button"
+          aria-current={currentView === "settings" ? "page" : undefined}
+          disabled={!settingsEnabled}
+          title="Settings"
+          onClick={() => onNavigate("settings")}
+        >
+          <Settings2 size={17} strokeWidth={1.8} aria-hidden="true" />
+          <span>Settings</span>
         </button>
       </nav>
 

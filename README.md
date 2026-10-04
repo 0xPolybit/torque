@@ -27,7 +27,7 @@ Torque is a cross-platform desktop BitTorrent client built with a Tauri shell, a
 - [Build](#build)
   - [Build a Windows `.exe` installer](#build-a-windows-exe-installer)
 - [Adding downloads](#adding-downloads)
-- [Discovering content](#discovering-content)
+- [Browse and search](#browse-and-search)
 - [Settings and persistence](#settings-and-persistence)
 - [Architecture](#architecture)
 - [Security](#security)
@@ -49,8 +49,10 @@ Torque is a cross-platform desktop BitTorrent client built with a Tauri shell, a
 - Filter active, queued, paused, completed, and failed downloads.
 - Set the default download location, choose whether downloads start and resume automatically, and select System, Dark, or Light theme.
 - Restore the rqbit session and download list across application restarts.
-- Search Internet Archive items explicitly labeled with supported open licenses, with independent provider status and pagination.
-- Inspect a discovered torrent through the existing metadata and file-selection step; search results never start a transfer directly.
+- Browse Internet Archive items explicitly labeled with supported open licenses, with provider filtering, category filtering, sorting, recent searches, and pagination.
+- Review provider details, license, source page, info hash when supplied, and available torrent mechanism before inspection.
+- Inspect a discovered torrent through the existing metadata and file-selection step; opening a result never starts a transfer directly.
+- View completed downloads in History and reach Settings from primary navigation.
 - Use keyboard-accessible dialogs, inline validation, loading feedback, and status notifications.
 
 ## Screenshots
@@ -156,11 +158,15 @@ Open a torrent's **Files** tab to review every file's size, selected/skipped sta
 
 File indexes come from the metainfo's ordered file list and are preserved through preview, rqbit status, live file-progress reporting, and session restoration. Torque uses librqbit's `only_files` when starting and `update_only_files` for later edits, so non-selected files are skipped except for unavoidable piece-boundary data. Selected file indexes are also stored with Torque's lightweight application state and rqbit's session snapshot.
 
-## Discovering content
+## Browse and search
 
-Choose **Discover** in the navigation rail and search the supported catalog by text or category. Search terms are sent to Internet Archive. Results show normalized title, description, category, size, publication date, and declared license. Search is limited to Internet Archive software, dataset, and media records whose metadata declares one of the supported open licenses (CC0 1.0, CC BY 4.0, or CC BY-SA 4.0). Rights and torrent availability can change at the source; review the item’s terms before downloading.
+Choose **Browse** in the navigation rail to search the configured sources. Filter results by source or category and sort by relevance, newest, size, or seeders when the provider supplies those counts. Choosing a source scopes the backend request to that provider. Use **Show more results** to request the next page. Recent searches are kept on this device and remain available beside results; clear them from Browse at any time.
 
-Select **Inspect files** on a result to ask the provider for its current details and source. Torque only returns an Internet Archive torrent URL when the item metadata lists its official `_archive.torrent` file. The existing Add Torrent dialog opens with that source filled in. You must inspect the torrent contents, choose the destination and files, and press **Start Download** to begin a transfer. Discovery itself never adds a torrent to the engine.
+Selecting a result opens its details panel; it does not download or inspect anything. Review the description, metadata, license, and source page, then choose **Inspect Torrent** to fetch the provider’s current download source. For Internet Archive, Torque only returns a torrent URL when item metadata lists its official `_archive.torrent` file. The existing torrent preview then fetches metadata and exact files. Choose a destination and files, and press **Start Download** to begin a transfer.
+
+The normalized search model includes an optional info hash and provider-supplied peer counts; fields absent from the source stay unavailable rather than being estimated. The current Internet Archive catalog does not provide peer counts or info hashes in its search metadata.
+
+The Browse page is composed from provider-backed search state, reusable search controls, result rows, a details panel, and recent-search storage. Provider selection and sorting operate on normalized results in the frontend, while category search, pagination, provider health, and source details use the Rust `SearchProvider` service.
 
 Search runs in the Rust backend and has a 12-second HTTP client timeout, a descriptive user agent, bounded pagination, request cancellation, and per-provider rate-limit handling. Provider failures are returned alongside results from other providers. Search fields and provider response formats remain inside the Rust adapter; the frontend receives normalized DTOs and provider health states.
 
@@ -190,7 +196,7 @@ The frontend does not receive unrestricted filesystem access. Native file and fo
 src/
   app/                    App shell, desktop connection, queue and preferences state
   components/             Sidebar, backend status, and toast notifications
-  features/discovery/     Search view and cancellation-aware provider state
+  features/discovery/     Browse controls, results, details, recent searches, and provider state
   features/transfers/     Add/inspection/settings dialogs, virtual file tree, filters, and transfer rows
     torrentPreviewTree.ts Build a nested file model from inspected torrent paths
     TorrentFilesPanel.tsx Searchable, sortable per-torrent file selection and progress

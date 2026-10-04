@@ -73,11 +73,15 @@ pub enum ProviderHealthState {
 #[serde(rename_all = "camelCase")]
 pub struct SearchFilters {
     pub category: Option<String>,
+    pub provider_id: Option<String>,
 }
 
 impl Default for SearchFilters {
     fn default() -> Self {
-        Self { category: None }
+        Self {
+            category: None,
+            provider_id: None,
+        }
     }
 }
 
@@ -92,6 +96,7 @@ pub struct TorrentSearchResult {
     pub size_bytes: Option<u64>,
     pub seeders: Option<u64>,
     pub leechers: Option<u64>,
+    pub info_hash: Option<String>,
     pub published_at: Option<String>,
     pub magnet_uri: Option<String>,
     pub torrent_url: Option<String>,
@@ -296,6 +301,15 @@ impl SearchService {
                 return Err("Choose a supported search category.".to_string());
             }
         }
+        if let Some(provider_id) = filters.provider_id.as_deref() {
+            if !self
+                .providers
+                .iter()
+                .any(|provider| provider.id() == provider_id)
+            {
+                return Err("That search provider is not available.".to_string());
+            }
+        }
 
         let cancellation = CancellationToken::new();
         let generation = self.runtime.next_generation.fetch_add(1, Ordering::Relaxed);
@@ -322,7 +336,17 @@ impl SearchService {
         };
 
         let query = query.to_string();
-        let providers = self.providers.clone();
+        let providers = self
+            .providers
+            .iter()
+            .filter(|provider| {
+                filters
+                    .provider_id
+                    .as_deref()
+                    .is_none_or(|provider_id| provider.id() == provider_id)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
         let provider_jobs = providers.iter().map(|provider| {
             let provider = Arc::clone(provider);
             let child = cancellation.child_token();
@@ -649,6 +673,7 @@ mod tests {
                     size_bytes: Some(42),
                     seeders: None,
                     leechers: None,
+                    info_hash: None,
                     published_at: None,
                     magnet_uri: None,
                     torrent_url: None,
@@ -790,6 +815,31 @@ mod tests {
             )
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn provider_filter_only_queries_the_selected_provider() {
+        let selected = stub("selected", false, false);
+        let other = stub("other", false, false);
+        let service = SearchService::with_providers(vec![selected.clone(), other.clone()]);
+
+        let response = service
+            .search(
+                "provider-filter".to_string(),
+                "dataset".to_string(),
+                1,
+                SearchFilters {
+                    category: None,
+                    provider_id: Some("selected".to_string()),
+                },
+            )
+            .await
+            .expect("selected provider search succeeds");
+
+        assert_eq!(response.providers.len(), 1);
+        assert_eq!(response.providers[0].provider_id, "selected");
+        assert_eq!(selected.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(other.calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
