@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Settings2 } from "lucide-react";
-import { Sidebar } from "../components/Sidebar";
+import { Sidebar, type AppView } from "../components/Sidebar";
 import { BackendStatus } from "../components/BackendStatus";
 import { ToastRegion } from "../components/ToastRegion";
+import { DiscoveryView } from "../features/discovery/DiscoveryView";
 import { AddTorrentDialog } from "../features/transfers/AddTorrentDialog";
 import { EmptyFilter } from "../features/transfers/EmptyFilter";
 import { EmptyQueue } from "../features/transfers/EmptyQueue";
@@ -10,6 +11,7 @@ import { SettingsDialog } from "../features/transfers/SettingsDialog";
 import { TorrentFilters } from "../features/transfers/TorrentFilters";
 import { TorrentList } from "../features/transfers/TorrentList";
 import { filterTorrents, type TorrentFilter } from "../features/transfers/torrentPresentation";
+import type { TorrentDownloadSource } from "../lib/discovery";
 import { useDesktopConnection } from "./useDesktopConnection";
 import { useTorrentQueue } from "./useTorrentQueue";
 
@@ -19,6 +21,8 @@ export default function App() {
   const queue = useTorrentQueue(isConnected);
   const [showAddTorrent, setShowAddTorrent] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [currentView, setCurrentView] = useState<AppView>("downloads");
+  const [discoverySource, setDiscoverySource] = useState<TorrentDownloadSource | null>(null);
   const [filter, setFilter] = useState<TorrentFilter>("all");
   const visibleTorrents = useMemo(
     () => filterTorrents(queue.torrents, filter),
@@ -46,24 +50,32 @@ export default function App() {
 
   return (
     <div className="app-shell" aria-busy={queue.initialLoading}>
-      <Sidebar connection={connection} torrentCount={queue.torrents.length} />
+      <Sidebar
+        connection={connection}
+        torrentCount={queue.torrents.length}
+        currentView={currentView}
+        onNavigate={setCurrentView}
+      />
 
       <main className="workspace">
         <header className="workspace__header">
           <div>
-            <h1>Downloads</h1>
-            <p>
-              {queue.torrents.length === 0
+            <h1>{currentView === "discover" ? "Discover" : "Downloads"}</h1>
+            <p>{currentView === "discover"
+              ? "Browse authorized open-licensed content"
+              : queue.torrents.length === 0
                 ? "Your local transfer library"
-                : `${activeCount} active · ${completedCount} completed`}
-            </p>
+                : `${activeCount} active · ${completedCount} completed`}</p>
           </div>
           <div className="workspace__actions">
             <BackendStatus connection={connection} onRetry={retry} />
             <button
               className="primary-button workspace__add"
               type="button"
-              onClick={() => setShowAddTorrent(true)}
+              onClick={() => {
+                setDiscoverySource(null);
+                setShowAddTorrent(true);
+              }}
               disabled={!isConnected}
             >
               <Plus size={15} strokeWidth={2} aria-hidden="true" />
@@ -86,7 +98,16 @@ export default function App() {
           <div className="queue-error" role="alert">{queue.error}</div>
         )}
 
-        {queue.initialLoading && isConnected && queue.torrents.length === 0 ? (
+        {currentView === "discover" ? (
+          <DiscoveryView
+            enabled={isConnected}
+            onReviewSource={(source) => {
+              setDiscoverySource(source);
+              setCurrentView("downloads");
+              setShowAddTorrent(true);
+            }}
+          />
+        ) : queue.initialLoading && isConnected && queue.torrents.length === 0 ? (
           <section className="queue-panel queue-loading" role="status" aria-live="polite">
             <span className="queue-loading__spinner" aria-hidden="true" />
             <span>Loading your downloads…</span>
@@ -124,13 +145,17 @@ export default function App() {
 
       {showAddTorrent && (
         <AddTorrentDialog
+          initialSource={discoverySource}
           selectedDirectory={queue.selectedDirectory}
           error={queue.error}
           busy={queue.busy}
           inspectingMetadata={queue.inspectingMetadata}
           selectingDirectory={queue.selectingDirectory}
           selectingFile={queue.selectingFile}
-          onClose={() => setShowAddTorrent(false)}
+          onClose={() => {
+            setShowAddTorrent(false);
+            setDiscoverySource(null);
+          }}
           onSelectDirectory={queue.chooseDirectory}
           onChooseTorrentFile={queue.chooseTorrentFile}
           onDiscardTorrentFile={queue.discardTorrentFile}

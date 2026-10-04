@@ -27,6 +27,7 @@ Torque is a cross-platform desktop BitTorrent client built with a Tauri shell, a
 - [Build](#build)
   - [Build a Windows `.exe` installer](#build-a-windows-exe-installer)
 - [Adding downloads](#adding-downloads)
+- [Discovering content](#discovering-content)
 - [Settings and persistence](#settings-and-persistence)
 - [Architecture](#architecture)
 - [Security](#security)
@@ -48,6 +49,8 @@ Torque is a cross-platform desktop BitTorrent client built with a Tauri shell, a
 - Filter active, queued, paused, completed, and failed downloads.
 - Set the default download location, choose whether downloads start and resume automatically, and select System, Dark, or Light theme.
 - Restore the rqbit session and download list across application restarts.
+- Search Internet Archive items explicitly labeled with supported open licenses, with independent provider status and pagination.
+- Inspect a discovered torrent through the existing metadata and file-selection step; search results never start a transfer directly.
 - Use keyboard-accessible dialogs, inline validation, loading feedback, and status notifications.
 
 ## Screenshots
@@ -61,6 +64,7 @@ Screenshots are not available yet. They will be added here when captured.
 - React 19, TypeScript 5, and Vite 7
 - pnpm 11.19.0
 - Tauri dialog and opener plugins, Lucide icons, and Inter Variable
+- Rust `reqwest` with rustls, `async-trait`, and `tokio-util` for provider HTTP calls and cancellation
 
 ## Installation
 
@@ -108,7 +112,7 @@ cargo check --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-There is no standalone frontend lint command or frontend test runner configured yet. TypeScript checking runs in strict mode; Rust tests cover input validation, persistence recovery, and session restoration.
+There is no standalone frontend lint command or frontend test runner configured yet. TypeScript checking runs in strict mode; Rust tests cover torrent input and lifecycle behavior, persistence recovery, provider normalization, provider isolation, rate limits, and cancellation using mocked sources.
 
 ## Build
 
@@ -152,6 +156,14 @@ Open a torrent's **Files** tab to review every file's size, selected/skipped sta
 
 File indexes come from the metainfo's ordered file list and are preserved through preview, rqbit status, live file-progress reporting, and session restoration. Torque uses librqbit's `only_files` when starting and `update_only_files` for later edits, so non-selected files are skipped except for unavoidable piece-boundary data. Selected file indexes are also stored with Torque's lightweight application state and rqbit's session snapshot.
 
+## Discovering content
+
+Choose **Discover** in the navigation rail and search the supported catalog by text or category. Search terms are sent to Internet Archive. Results show normalized title, description, category, size, publication date, and declared license. Search is limited to Internet Archive software, dataset, and media records whose metadata declares one of the supported open licenses (CC0 1.0, CC BY 4.0, or CC BY-SA 4.0). Rights and torrent availability can change at the source; review the item’s terms before downloading.
+
+Select **Inspect files** on a result to ask the provider for its current details and source. Torque only returns an Internet Archive torrent URL when the item metadata lists its official `_archive.torrent` file. The existing Add Torrent dialog opens with that source filled in. You must inspect the torrent contents, choose the destination and files, and press **Start Download** to begin a transfer. Discovery itself never adds a torrent to the engine.
+
+Search runs in the Rust backend and has a 12-second HTTP client timeout, a descriptive user agent, bounded pagination, request cancellation, and per-provider rate-limit handling. Provider failures are returned alongside results from other providers. Search fields and provider response formats remain inside the Rust adapter; the frontend receives normalized DTOs and provider health states.
+
 ## Settings and persistence
 
 Settings include the default download folder, automatic start and resume behavior, and System, Dark, or Light theme. The default preferences start new downloads immediately, resume unfinished torrents on launch, and use Dark theme.
@@ -164,9 +176,13 @@ The React frontend calls typed Tauri command wrappers. Tauri commands adapt nati
 
 The nested file tree is assembled in a dedicated frontend helper and rendered as a flattened, virtualized view for both pre-download inspection and each transfer's Files tab. `TorrentFilesPanel` owns local edits, search, sort, folder tri-state, and the save action; transfer rows remain coupled to app-level torrent statuses rather than rqbit types.
 
+Content discovery is a separate Rust service beside the torrent service. `SearchProvider` defines source identity, icon, capabilities, paged normalized search, details, download-source lookup, and health checks. `SearchService` registers independent provider implementations and aggregates their results without making one provider failure fail the whole search. The Internet Archive adapter uses its documented Advanced Search and Metadata APIs, filters out items without an explicit supported open license, and validates that the corresponding archive torrent file is listed before returning its URL. Tauri exposes typed search, health, cancellation, details, and source commands; it does not pass provider-specific payloads or filesystem access to React.
+
+To add another authorized source, implement `SearchProvider` in `src-tauri/src/discovery/`, map its response to `TorrentSearchResult`, and register it in `SearchService::new`. Prefer a documented API or published feed over page scraping. Keep source URLs constrained to that provider, set explicit timeouts and a descriptive user agent, propagate the cancellation token, report rate limits and health, and add mocked response tests. A new provider does not need changes to the torrent engine or result components unless it introduces a new normalized capability.
+
 ## Security
 
-The frontend does not receive unrestricted filesystem access. Native file and folder pickers are invoked by Rust, and selected folders are represented to the frontend by opaque IDs. The narrow Tauri capability grants only the window theme permission required by the appearance setting. Opening a completed download's folder uses the native opener plugin; arbitrary command execution is not exposed.
+The frontend does not receive unrestricted filesystem access. Native file and folder pickers are invoked by Rust, and selected folders are represented to the frontend by opaque IDs. The narrow Tauri capability grants only the window theme permission required by the appearance setting. Discovery requests are sent by the Rust provider adapter to its fixed official API host; provider data is treated as untrusted text. Search results cannot invoke torrent start commands: they must pass through the existing inspection and explicit-start flow. Opening a completed download's folder uses the native opener plugin; arbitrary command execution is not exposed.
 
 ## Project structure
 
@@ -174,15 +190,17 @@ The frontend does not receive unrestricted filesystem access. Native file and fo
 src/
   app/                    App shell, desktop connection, queue and preferences state
   components/             Sidebar, backend status, and toast notifications
+  features/discovery/     Search view and cancellation-aware provider state
   features/transfers/     Add/inspection/settings dialogs, virtual file tree, filters, and transfer rows
     torrentPreviewTree.ts Build a nested file model from inspected torrent paths
     TorrentFilesPanel.tsx Searchable, sortable per-torrent file selection and progress
-  lib/                    Typed Tauri command wrappers and frontend DTOs
+  lib/                    Typed Tauri transfer, discovery, and preference command wrappers
   styles.css              Desktop layout, themes, controls, and responsive rules
 src-tauri/
   capabilities/           Narrow Tauri window capability
   icons/                  Cross-platform application icons, including icon.ico
   src/commands.rs         Tauri commands and native picker adapters
+  src/discovery/          SearchProvider contract, registry, models, and Internet Archive adapter
   src/torrent/service.rs  rqbit session, validation, restoration, and status mapping
   src/torrent/persistence.rs
                           Versioned application preferences and queue metadata
@@ -199,8 +217,9 @@ pnpm-lock.yaml            Pinned frontend dependency graph
 
 - Download and upload speed caps are not exposed in Settings. rqbit supports per-torrent rate options, but the app does not yet provide clean runtime-wide controls for active downloads. See [`AddTorrentOptions`](https://docs.rs/librqbit/9.0.1/librqbit/struct.AddTorrentOptions.html).
 - There is no system tray or close-to-tray behavior. Closing the window exits the app; the session is restored on the next launch.
-- Removing a torrent keeps its downloaded files. Deleting downloaded data and selecting individual files are not implemented.
+- Removing a torrent keeps its downloaded files. A separate delete-payload action is not implemented.
 - Peer counts and upload speeds are shown when the engine provides them; unavailable values appear as a dash.
+- Discovery currently includes only the Internet Archive adapter and filters for explicit CC0 1.0, CC BY 4.0, and CC BY-SA 4.0 license metadata. It does not independently verify rights claims, and it has no seeder/leech counts from that catalog.
 - A dedicated frontend linter and frontend unit-test setup are not configured yet.
 
 ## Troubleshooting

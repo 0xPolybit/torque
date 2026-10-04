@@ -1,9 +1,13 @@
-import { Activity, FolderDown, ListMusic } from "lucide-react";
+import { Activity, FolderDown, ListMusic, Search } from "lucide-react";
 import type { DesktopConnection } from "../app/useDesktopConnection";
+
+export type AppView = "downloads" | "discover";
 
 interface SidebarProps {
   connection: DesktopConnection;
   torrentCount: number;
+  currentView: AppView;
+  onNavigate: (view: AppView) => void;
 }
 
 function folderName(path: string): string {
@@ -11,7 +15,7 @@ function folderName(path: string): string {
   return parts.at(-1) || path;
 }
 
-export function Sidebar({ connection, torrentCount }: SidebarProps) {
+export function Sidebar({ connection, torrentCount, currentView, onNavigate }: SidebarProps) {
   const info = connection.state === "connected" ? connection.info : null;
 
   return (
@@ -23,13 +27,31 @@ export function Sidebar({ connection, torrentCount }: SidebarProps) {
 
       <nav className="sidebar__navigation" aria-label="Library">
         <span className="sidebar__section-label">Library</span>
-        <span className="sidebar__nav-item" aria-current="page">
+        <button
+          className={`sidebar__nav-item${currentView === "downloads" ? " is-current" : ""}`}
+          type="button"
+          aria-label={`Downloads, ${torrentCount} torrents`}
+          aria-current={currentView === "downloads" ? "page" : undefined}
+          title="Downloads"
+          onClick={() => onNavigate("downloads")}
+        >
           <ListMusic size={17} strokeWidth={1.8} aria-hidden="true" />
-          <span>All torrents</span>
+          <span>Downloads</span>
           <span className="sidebar__count" aria-label={`${torrentCount} torrents`}>
             {torrentCount}
           </span>
-        </span>
+        </button>
+        <button
+          className={`sidebar__nav-item${currentView === "discover" ? " is-current" : ""}`}
+          type="button"
+          aria-label="Discover open-licensed content"
+          aria-current={currentView === "discover" ? "page" : undefined}
+          title="Discover"
+          onClick={() => onNavigate("discover")}
+        >
+          <Search size={17} strokeWidth={1.8} aria-hidden="true" />
+          <span>Discover</span>
+        </button>
       </nav>
 
       <div className="sidebar__bottom">

@@ -1,4 +1,5 @@
 mod commands;
+mod discovery;
 mod torrent;
 
 use tauri::Manager;
@@ -22,6 +23,7 @@ pub fn run() {
             ))
             .map_err(|error| std::io::Error::other(error.to_string()))?;
             app.manage(service);
+            app.manage(discovery::SearchService::new());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -44,7 +46,13 @@ pub fn run() {
             commands::resume_torrent,
             commands::retry_torrent,
             commands::remove_torrent,
-            commands::open_torrent_folder
+            commands::open_torrent_folder,
+            commands::get_search_providers,
+            commands::refresh_search_provider_health,
+            commands::search_torrents,
+            commands::cancel_torrent_search,
+            commands::get_torrent_search_details,
+            commands::get_torrent_search_source
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Torque desktop shell");

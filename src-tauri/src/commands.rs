@@ -4,6 +4,10 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
+use crate::discovery::{
+    SearchFilters, SearchProviderInfo, SearchService, TorrentDownloadSource, TorrentSearchDetails,
+    TorrentSearchResponse,
+};
 use crate::torrent::{
     AppPreferences, DownloadDirectory, TorrentFileSelection, TorrentPreview, TorrentService,
     TorrentStatus,
@@ -260,4 +264,50 @@ pub fn open_torrent_folder(
     app.opener()
         .open_path(directory.to_string_lossy().into_owned(), None::<&str>)
         .map_err(|error| format!("Could not open the torrent's download folder: {error}"))
+}
+
+#[tauri::command]
+pub fn get_search_providers(service: State<'_, SearchService>) -> Vec<SearchProviderInfo> {
+    service.providers()
+}
+
+#[tauri::command]
+pub async fn refresh_search_provider_health(
+    service: State<'_, SearchService>,
+) -> Result<Vec<SearchProviderInfo>, String> {
+    Ok(service.refresh_provider_health().await)
+}
+
+#[tauri::command]
+pub async fn search_torrents(
+    service: State<'_, SearchService>,
+    search_id: String,
+    query: String,
+    page: u32,
+    filters: SearchFilters,
+) -> Result<TorrentSearchResponse, String> {
+    service.search(search_id, query, page, filters).await
+}
+
+#[tauri::command]
+pub fn cancel_torrent_search(service: State<'_, SearchService>, search_id: String) -> bool {
+    service.cancel_search(&search_id)
+}
+
+#[tauri::command]
+pub async fn get_torrent_search_details(
+    service: State<'_, SearchService>,
+    provider_id: String,
+    result_id: String,
+) -> Result<TorrentSearchDetails, String> {
+    service.get_details(&provider_id, &result_id).await
+}
+
+#[tauri::command]
+pub async fn get_torrent_search_source(
+    service: State<'_, SearchService>,
+    provider_id: String,
+    result_id: String,
+) -> Result<TorrentDownloadSource, String> {
+    service.get_download_source(&provider_id, &result_id).await
 }

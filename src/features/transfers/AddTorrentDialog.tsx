@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { FileUp, Folder, Link2, LoaderCircle, Magnet, Plus, X } from "lucide-react";
+import type { TorrentDownloadSource } from "../../lib/discovery";
 import type { DownloadDirectory, TorrentFileSelection, TorrentPreview } from "../../lib/desktop";
 import { validateMagnetUri, validateTorrentUrl } from "./torrentInput";
 import { TorrentInspection } from "./TorrentInspection";
@@ -22,6 +23,7 @@ interface AddTorrentDialogProps {
   onInspectFile: (selectionId: string) => Promise<TorrentPreview | null>;
   onDiscardPreview: (previewId: string) => Promise<void>;
   onStartPreview: (previewId: string, fileIndices: number[]) => Promise<boolean>;
+  initialSource?: TorrentDownloadSource | null;
 }
 
 export function AddTorrentDialog({
@@ -40,11 +42,12 @@ export function AddTorrentDialog({
   onInspectFile,
   onDiscardPreview,
   onStartPreview,
+  initialSource,
 }: AddTorrentDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
-  const [kind, setKind] = useState<InputKind>("magnet");
-  const [magnetLink, setMagnetLink] = useState("");
-  const [torrentUrl, setTorrentUrl] = useState("");
+  const [kind, setKind] = useState<InputKind>(() => initialSource?.kind === "torrentUrl" ? "url" : "magnet");
+  const [magnetLink, setMagnetLink] = useState(() => initialSource?.kind === "magnet" ? initialSource.value : "");
+  const [torrentUrl, setTorrentUrl] = useState(() => initialSource?.kind === "torrentUrl" ? initialSource.value : "");
   const [fileSelection, setFileSelection] = useState<TorrentFileSelection | null>(null);
   const [preview, setPreview] = useState<TorrentPreview | null>(null);
   const [validationError, setValidationError] = useState("");
