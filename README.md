@@ -40,6 +40,8 @@ Torque is a cross-platform desktop BitTorrent client built with a Tauri shell, a
 
 - Add torrents from magnet links, local `.torrent` files, and HTTP/HTTPS torrent URLs.
 - Inspect torrent metadata and browse the complete nested file tree before downloading; choose exactly which files to include.
+- Select whole folders with selected, unselected, and indeterminate checkbox states, or choose files individually.
+- Change a torrent's file selection later from its Files tab; search large file lists and sort by name, size, or progress.
 - Choose a destination folder with the native folder picker; Torque remembers it for future downloads.
 - Track progress, downloaded and total size, download and upload speeds, peers, ETA, and current state.
 - Pause and resume downloads, retry errors, open a completed download's folder, and remove torrents while keeping their files.
@@ -144,6 +146,12 @@ Select **Add torrent**, choose a source type, and set the destination folder. To
 
 Torque validates inputs in the interface and again in Rust. Invalid inputs and backend errors remain visible so they can be corrected. The selected folder becomes the remembered default for later downloads. File selection is passed to librqbit when the user confirms, and unselected torrent files are not downloaded.
 
+### Changing file selection
+
+Open a torrent's **Files** tab to review every file's size, selected/skipped state, downloaded bytes, progress, and status. Use the search box and sort menu to narrow or order large lists. Folder checkboxes select or skip their files together; a partially selected folder displays an indeterminate checkbox. If a search is active, a folder checkbox acts on matching files in that folder. Press **Save selection** to apply changes. Selection edits are available after rqbit has initialized the torrent and while it is active or paused; completed sessions can also be changed when rqbit keeps them available. At least one file must remain selected; use **Pause** to stop all transfer activity. Changes are sent as validated file indexes, not paths.
+
+File indexes come from the metainfo's ordered file list and are preserved through preview, rqbit status, live file-progress reporting, and session restoration. Torque uses librqbit's `only_files` when starting and `update_only_files` for later edits, so non-selected files are skipped except for unavoidable piece-boundary data. Selected file indexes are also stored with Torque's lightweight application state and rqbit's session snapshot.
+
 ## Settings and persistence
 
 Settings include the default download folder, automatic start and resume behavior, and System, Dark, or Light theme. The default preferences start new downloads immediately, resume unfinished torrents on launch, and use Dark theme.
@@ -152,9 +160,9 @@ Torque stores preferences, the last selected folder, torrent identifiers, destin
 
 ## Architecture
 
-The React frontend calls typed Tauri command wrappers. Tauri commands adapt native pickers and delegate torrent work to `TorrentService`. The service owns the long-lived `librqbit` session and uses its `list_only` metadata path to inspect local files, torrent URLs, and magnet links without registering or downloading torrent contents. Validated metainfo is held behind a short-lived opaque preview ID in Rust; the frontend receives only torrent/file metadata and file indexes. On explicit confirmation, the service starts that inspected metainfo with the selected file indexes and destination. It also validates inputs and destinations, maps engine state to application statuses, and persists queue metadata.
+The React frontend calls typed Tauri command wrappers. Tauri commands adapt native pickers and delegate torrent work to `TorrentService`. The service owns the long-lived `librqbit` session and uses its `list_only` metadata path to inspect local files, torrent URLs, and magnet links without registering or downloading torrent contents. Validated metainfo is held behind a short-lived opaque preview ID in Rust; the frontend receives only torrent/file metadata and file indexes. On explicit confirmation, the service starts that inspected metainfo with selected file indexes and destination. For active torrents, the service validates selection indexes against librqbit's metadata before calling `update_only_files`. File status maps the same ordered indexes to inclusion, downloaded bytes, progress, and state; selection is retained by the engine session and app state.
 
-The file tree is assembled in a dedicated frontend helper and rendered as a flattened, virtualized view. Selection state stays in the inspection component; transfer rows remain coupled to app-level torrent statuses rather than rqbit types.
+The nested file tree is assembled in a dedicated frontend helper and rendered as a flattened, virtualized view for both pre-download inspection and each transfer's Files tab. `TorrentFilesPanel` owns local edits, search, sort, folder tri-state, and the save action; transfer rows remain coupled to app-level torrent statuses rather than rqbit types.
 
 ## Security
 
@@ -168,6 +176,7 @@ src/
   components/             Sidebar, backend status, and toast notifications
   features/transfers/     Add/inspection/settings dialogs, virtual file tree, filters, and transfer rows
     torrentPreviewTree.ts Build a nested file model from inspected torrent paths
+    TorrentFilesPanel.tsx Searchable, sortable per-torrent file selection and progress
   lib/                    Typed Tauri command wrappers and frontend DTOs
   styles.css              Desktop layout, themes, controls, and responsive rules
 src-tauri/

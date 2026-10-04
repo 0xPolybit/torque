@@ -1,11 +1,13 @@
+import { useState } from "react";
 import {
   AlertCircle,
-  ChevronDown,
   Clock3,
   Download,
   FileDown,
+  Files,
   FolderDown,
   FolderOpen,
+  Info,
   LoaderCircle,
   Pause,
   Play,
@@ -16,6 +18,7 @@ import {
 } from "lucide-react";
 import type { TorrentControlAction, TorrentStatus } from "../../lib/desktop";
 import { TorrentStateBadge } from "./TorrentStateBadge";
+import { TorrentFilesPanel } from "./TorrentFilesPanel";
 import {
   estimateTimeRemaining,
   formatBytes,
@@ -32,6 +35,7 @@ interface TorrentRowProps {
   onRetry: (torrentId: number) => Promise<boolean>;
   onRemove: (torrentId: number) => Promise<boolean>;
   onOpenFolder: (torrentId: number) => Promise<boolean>;
+  onUpdateFileSelection: (torrentId: number, selectedIndices: number[]) => Promise<boolean>;
 }
 
 export function TorrentRow({
@@ -43,7 +47,9 @@ export function TorrentRow({
   onRetry,
   onRemove,
   onOpenFolder,
+  onUpdateFileSelection,
 }: TorrentRowProps) {
+  const [activeTab, setActiveTab] = useState<"overview" | "files">("overview");
   const title = torrent.name?.trim() || "Waiting for torrent metadata";
   const progress = Number.isFinite(torrent.progressPercent)
     ? Math.max(0, Math.min(100, torrent.progressPercent))
@@ -178,21 +184,29 @@ export function TorrentRow({
         </span>
       </div>
 
-      {torrent.files.length > 0 && (
-        <details className="torrent-row__files">
-          <summary>
-            <span>{torrent.files.length} files <span aria-hidden="true">·</span> {torrent.totalPieces} pieces</span>
-            <ChevronDown size={14} aria-hidden="true" />
-          </summary>
-          <ul>
-            {torrent.files.map((file, index) => (
-              <li key={`${file.name}-${index}`}>
-                <span title={file.name}>{file.name}</span>
-                <span>{formatBytes(file.sizeBytes)}</span>
-              </li>
-            ))}
-          </ul>
-        </details>
+      <div className="torrent-row__detail-tabs" role="tablist" aria-label={`${title} details`}>
+        <button type="button" role="tab" aria-selected={activeTab === "overview"} aria-controls={`torrent-${torrent.id}-overview`} onClick={() => setActiveTab("overview")}>
+          <Info size={13} aria-hidden="true" /> Overview
+        </button>
+        <button type="button" role="tab" aria-selected={activeTab === "files"} aria-controls={`torrent-${torrent.id}-files`} onClick={() => setActiveTab("files")}>
+          <Files size={13} aria-hidden="true" /> Files <span>{torrent.files.length.toLocaleString()}</span>
+        </button>
+      </div>
+      {activeTab === "overview" ? (
+        <div className="torrent-row__overview" role="tabpanel" id={`torrent-${torrent.id}-overview`}>
+          <span><strong>Info hash</strong><code title={torrent.infoHash}>{torrent.infoHash}</code></span>
+          <span><strong>Files</strong>{torrent.files.length.toLocaleString()}</span>
+          <span><strong>Pieces</strong>{torrent.totalPieces.toLocaleString()}</span>
+        </div>
+      ) : (
+        <div role="tabpanel" id={`torrent-${torrent.id}-files`}>
+          <TorrentFilesPanel
+            torrent={torrent}
+            busy={actionBusy}
+            saving={pendingAction === "update-files"}
+            onSave={onUpdateFileSelection}
+          />
+        </div>
       )}
     </article>
   );

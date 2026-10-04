@@ -193,6 +193,18 @@ pub fn get_torrent_status(
 }
 
 #[tauri::command]
+pub async fn update_torrent_file_selection(
+    service: State<'_, TorrentService>,
+    torrent_id: usize,
+    selected_file_indices: Vec<usize>,
+) -> Result<TorrentStatus, String> {
+    service
+        .update_torrent_file_selection(torrent_id, &selected_file_indices)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn pause_torrent(
     service: State<'_, TorrentService>,
     torrent_id: usize,

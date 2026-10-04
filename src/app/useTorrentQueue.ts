@@ -18,6 +18,7 @@ import {
   selectTorrentFile as selectNativeTorrentFile,
   setAppPreferences,
   setWindowTheme,
+  updateTorrentFileSelection as updateDesktopTorrentFileSelection,
   startInspectedTorrent as startDesktopInspectedTorrent,
   type AppPreferences,
   type TorrentActionState,
@@ -264,6 +265,7 @@ export function useTorrentQueue(enabled: boolean) {
           resume: "Download resumed.",
           retry: "Retry started.",
           remove: "Removed from Torque. Downloaded files were kept.",
+          "update-files": "File selection updated.",
         };
         if (successMessages[action]) {
           setToast({ id: Date.now(), message: successMessages[action]! });
@@ -321,6 +323,10 @@ export function useTorrentQueue(enabled: boolean) {
       runTorrentAction(torrentId, "remove", () => removeDesktopTorrent(torrentId)),
     openTorrentFolder: (torrentId: number) =>
       runTorrentAction(torrentId, "open-folder", () => openDesktopTorrentFolder(torrentId)),
+    updateTorrentFileSelection: (torrentId: number, selectedFileIndices: number[]) =>
+      runTorrentAction(torrentId, "update-files", () =>
+        updateDesktopTorrentFileSelection(torrentId, selectedFileIndices),
+      ),
     inspectMagnet: (link: string) =>
       inspect(() => inspectDesktopMagnet(link, selectedDirectoryId)),
     inspectTorrentUrl: (url: string) =>

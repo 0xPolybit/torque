@@ -55,6 +55,8 @@ pub struct PersistedTorrent {
     pub total_bytes: u64,
     pub added_at: u64,
     pub completed_at: Option<u64>,
+    #[serde(default)]
+    pub selected_file_indices: Option<Vec<usize>>,
 }
 
 impl PersistedTorrent {
@@ -105,6 +107,7 @@ impl PersistedTorrent {
             added_at: self.added_at,
             completed_at: self.completed_at,
             engine_available: false,
+            file_selection_editable: false,
         }
     }
 }
@@ -276,6 +279,18 @@ impl ApplicationPersistence {
         } else {
             status.state
         };
+        let selected_file_indices = if status.files.is_empty() {
+            prior.and_then(|record| record.selected_file_indices.clone())
+        } else {
+            Some(
+                status
+                    .files
+                    .iter()
+                    .filter(|file| file.included)
+                    .map(|file| file.index)
+                    .collect(),
+            )
+        };
         let record = PersistedTorrent {
             id: status.id,
             info_hash: status.info_hash.clone(),
@@ -289,6 +304,7 @@ impl ApplicationPersistence {
             total_bytes,
             added_at,
             completed_at,
+            selected_file_indices,
         };
         let should_write = prior.is_none_or(|prior| {
             prior.id != record.id
@@ -298,6 +314,7 @@ impl ApplicationPersistence {
                 || prior.last_state != record.last_state
                 || prior.last_error != record.last_error
                 || prior.completed_at != record.completed_at
+                || prior.selected_file_indices != record.selected_file_indices
                 || (prior.progress_percent - record.progress_percent).abs() >= 1.0
         });
         state.torrents.insert(key, record);

@@ -53,13 +53,18 @@ export interface DownloadDirectoryList {
 }
 
 export interface TorrentFile {
+  index: number;
   name: string;
-  sizeBytes: number;
+  path: string;
+  sizeBytes: string;
+  downloadedBytes: string;
+  progressPercent: number;
   included: boolean;
+  state: "skipped" | "queued" | "downloading" | "paused" | "completed" | "error";
 }
 
 export type TorrentState = "queued" | "downloading" | "paused" | "completed" | "error";
-export type TorrentControlAction = "pause" | "resume" | "retry" | "remove" | "open-folder";
+export type TorrentControlAction = "pause" | "resume" | "retry" | "remove" | "open-folder" | "update-files";
 
 export interface TorrentActionState {
   pending: TorrentControlAction | null;
@@ -85,6 +90,7 @@ export interface TorrentStatus {
   addedAt: number;
   completedAt: number | null;
   engineAvailable: boolean;
+  fileSelectionEditable: boolean;
 }
 
 export function getAppInfo(): Promise<AppInfo> {
@@ -117,6 +123,16 @@ export function getTorrents(): Promise<TorrentStatus[]> {
 
 export function getTorrentStatus(torrentId: number): Promise<TorrentStatus> {
   return invoke<TorrentStatus>("get_torrent_status", { torrentId });
+}
+
+export function updateTorrentFileSelection(
+  torrentId: number,
+  selectedFileIndices: number[],
+): Promise<TorrentStatus> {
+  return invoke<TorrentStatus>("update_torrent_file_selection", {
+    torrentId,
+    selectedFileIndices,
+  });
 }
 
 export function pauseTorrent(torrentId: number): Promise<TorrentStatus> {

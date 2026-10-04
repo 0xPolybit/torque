@@ -114,6 +114,7 @@ export default function App() {
                   onRetry={queue.retryTorrent}
                   onRemove={queue.removeTorrent}
                   onOpenFolder={queue.openTorrentFolder}
+                  onUpdateFileSelection={queue.updateTorrentFileSelection}
                 />
               )
               : <EmptyFilter filter={filter} />}
