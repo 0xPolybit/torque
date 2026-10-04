@@ -61,6 +61,15 @@ pub enum TorrentError {
     NoFilesSelected,
     #[error("The selected files do not match this torrent preview. Inspect it again.")]
     InvalidFileSelection,
+    #[error("This torrent is already in your library.")]
+    DuplicateTorrent,
+    #[error("Selected files need {selected_bytes} bytes, but the destination has {available_bytes} bytes free.")]
+    InsufficientDiskSpace {
+        selected_bytes: u64,
+        available_bytes: u64,
+    },
+    #[error("A torrent file path would escape the selected download folder.")]
+    UnsafeTorrentPath,
     #[error("Wait until the torrent is active or paused before changing its file selection.")]
     FileSelectionUnavailable,
     #[error("Torrent metadata is larger than the 64 MiB limit.")]
@@ -98,7 +107,27 @@ pub struct TorrentPreviewFile {
     pub filename: String,
     pub size_bytes: String,
     pub extension: Option<String>,
+    pub category: TorrentFileCategory,
+    pub is_executable_or_script: bool,
     pub selected: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TorrentFileCategory {
+    Video,
+    Audio,
+    Archive,
+    Document,
+    Other,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExistingTorrent {
+    pub id: usize,
+    pub name: Option<String>,
+    pub state: TorrentState,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -112,6 +141,7 @@ pub struct TorrentPreview {
     pub trackers: Vec<String>,
     pub is_private: bool,
     pub files: Vec<TorrentPreviewFile>,
+    pub existing_torrent: Option<ExistingTorrent>,
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +149,8 @@ struct PreparedTorrentPreview {
     metainfo: Bytes,
     info_hash: String,
     file_count: usize,
+    file_sizes: Vec<u64>,
+    file_paths: Vec<String>,
     source_type: TorrentSourceType,
 }
 
@@ -531,9 +563,33 @@ impl TorrentService {
         }
 
         let preview_id = Uuid::new_v4().to_string();
+        let file_sizes = metadata
+            .files
+            .iter()
+            .map(|file| {
+                file.size_bytes.parse::<u64>().map_err(|_| {
+                    TorrentError::InvalidTorrentMetadata(
+                        "A torrent file has an invalid size.".to_string(),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let existing_torrent = self
+            .find_existing_torrent(&metadata.info_hash)?
+            .map(|torrent| ExistingTorrent {
+                id: torrent.id,
+                name: torrent.name,
+                state: torrent.state,
+            });
         let prepared = PreparedTorrentPreview {
             info_hash: metadata.info_hash.clone(),
             file_count: metadata.files.len(),
+            file_sizes,
+            file_paths: metadata
+                .files
+                .iter()
+                .map(|file| file.path.clone())
+                .collect(),
             metainfo,
             source_type,
         };
@@ -551,6 +607,7 @@ impl TorrentService {
             trackers: metadata.trackers,
             is_private: metadata.is_private,
             files: metadata.files,
+            existing_torrent,
         })
     }
 
@@ -567,6 +624,7 @@ impl TorrentService {
         preview_id: &str,
         directory_id: &str,
         selected_file_indices: &[usize],
+        allow_insufficient_space: bool,
     ) -> Result<TorrentStatus, TorrentError> {
         let output_directory = self.validate_output_directory(directory_id)?;
         let prepared = self
@@ -576,6 +634,10 @@ impl TorrentService {
             .get(preview_id)
             .cloned()
             .ok_or(TorrentError::UnknownTorrentPreview)?;
+
+        if self.find_existing_torrent(&prepared.info_hash)?.is_some() {
+            return Err(TorrentError::DuplicateTorrent);
+        }
 
         if selected_file_indices.is_empty() {
             return Err(TorrentError::NoFilesSelected);
@@ -597,6 +659,11 @@ impl TorrentService {
             return Err(TorrentError::NoFilesSelected);
         }
         only_files.sort_unstable();
+
+        validate_torrent_paths_for_output(&output_directory, &prepared.file_paths)?;
+        let selected_bytes = selected_file_size(&prepared.file_sizes, &only_files);
+        let available_bytes = self.output_directory_free_space(directory_id)?;
+        validate_available_space(selected_bytes, available_bytes, allow_insufficient_space)?;
 
         let start_automatically = self.preferences()?.start_downloads_automatically;
         let response = self
@@ -645,6 +712,26 @@ impl TorrentService {
             .ok_or(TorrentError::UnknownDownloadDirectory)?;
 
         validate_directory(&path)
+    }
+
+    /// Returns available bytes for a registered destination. `None` means the
+    /// platform/filesystem could not provide a reliable free-space estimate.
+    pub fn output_directory_free_space(
+        &self,
+        directory_id: &str,
+    ) -> Result<Option<u64>, TorrentError> {
+        let directory = self.validate_output_directory(directory_id)?;
+        Ok(fs2::available_space(directory).ok())
+    }
+
+    fn find_existing_torrent(
+        &self,
+        info_hash: &str,
+    ) -> Result<Option<TorrentStatus>, TorrentError> {
+        Ok(self
+            .get_torrents()?
+            .into_iter()
+            .find(|torrent| torrent.info_hash.eq_ignore_ascii_case(info_hash)))
     }
 
     pub async fn pause_torrent(&self, id: usize) -> Result<TorrentStatus, TorrentError> {
@@ -1232,6 +1319,139 @@ fn inspection_options(output_directory: &Path) -> AddTorrentOptions {
     }
 }
 
+fn validate_torrent_path_components(components: &[String]) -> Result<(), TorrentError> {
+    if components.is_empty()
+        || components.iter().any(|component| {
+            component.is_empty()
+                || matches!(component.as_str(), "." | "..")
+                || component.contains('/')
+                || component.contains('\\')
+                || component.contains(':')
+                || component.chars().any(char::is_control)
+                || Path::new(component).is_absolute()
+        })
+    {
+        return Err(TorrentError::InvalidTorrentMetadata(
+            "A torrent file contains an unsafe path component.".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_torrent_paths_for_output(
+    output_directory: &Path,
+    paths: &[String],
+) -> Result<(), TorrentError> {
+    let root = validate_directory(output_directory)?;
+    for path in paths {
+        let components: Vec<String> = path.split('/').map(str::to_owned).collect();
+        validate_torrent_path_components(&components)
+            .map_err(|_| TorrentError::UnsafeTorrentPath)?;
+        let mut current = root.clone();
+        for component in components {
+            current.push(component);
+            match fs::symlink_metadata(&current) {
+                Ok(_) => {
+                    let canonical =
+                        fs::canonicalize(&current).map_err(|_| TorrentError::UnsafeTorrentPath)?;
+                    if !canonical.starts_with(&root) {
+                        return Err(TorrentError::UnsafeTorrentPath);
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error) => {
+                    return Err(TorrentError::DownloadDirectory(error.to_string()));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn classify_torrent_file(extension: Option<&str>) -> (TorrentFileCategory, bool) {
+    let extension = extension.unwrap_or_default().to_ascii_lowercase();
+    let category = if matches!(
+        extension.as_str(),
+        "mkv"
+            | "mp4"
+            | "avi"
+            | "mov"
+            | "wmv"
+            | "flv"
+            | "webm"
+            | "m4v"
+            | "mpg"
+            | "mpeg"
+            | "ts"
+            | "m2ts"
+            | "vob"
+            | "3gp"
+            | "ogv"
+    ) {
+        TorrentFileCategory::Video
+    } else if matches!(
+        extension.as_str(),
+        "mp3" | "flac" | "wav" | "aac" | "ogg" | "opus" | "m4a" | "wma" | "alac"
+    ) {
+        TorrentFileCategory::Audio
+    } else if matches!(
+        extension.as_str(),
+        "zip" | "7z" | "rar" | "tar" | "gz" | "bz2" | "xz" | "zst" | "tgz" | "iso"
+    ) {
+        TorrentFileCategory::Archive
+    } else if matches!(
+        extension.as_str(),
+        "pdf"
+            | "txt"
+            | "md"
+            | "rtf"
+            | "doc"
+            | "docx"
+            | "xls"
+            | "xlsx"
+            | "ppt"
+            | "pptx"
+            | "odt"
+            | "ods"
+            | "odp"
+            | "csv"
+            | "epub"
+    ) {
+        TorrentFileCategory::Document
+    } else {
+        TorrentFileCategory::Other
+    };
+    let is_executable_or_script = matches!(
+        extension.as_str(),
+        "exe" | "msi" | "bat" | "cmd" | "ps1" | "scr" | "js" | "vbs"
+    );
+    (category, is_executable_or_script)
+}
+
+fn validate_available_space(
+    selected_bytes: u64,
+    available_bytes: Option<u64>,
+    allow_insufficient_space: bool,
+) -> Result<(), TorrentError> {
+    if !allow_insufficient_space {
+        if let Some(available_bytes) = available_bytes {
+            if selected_bytes > available_bytes {
+                return Err(TorrentError::InsufficientDiskSpace {
+                    selected_bytes,
+                    available_bytes,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn selected_file_size(file_sizes: &[u64], selected_indices: &[usize]) -> u64 {
+    selected_indices.iter().fold(0_u64, |total, index| {
+        total.saturating_add(file_sizes[*index])
+    })
+}
+
 fn preview_metadata<ByteBuf: AsRef<[u8]>>(
     info: &librqbit::ValidatedTorrentMetaV1Info<ByteBuf>,
     info_hash: String,
@@ -1251,22 +1471,14 @@ fn preview_metadata<ByteBuf: AsRef<[u8]>>(
                     "A torrent file has an empty path.".to_string(),
                 ));
             };
-            if components.iter().any(|component| {
-                component.is_empty()
-                    || matches!(component.as_str(), "." | "..")
-                    || component.contains('/')
-                    || component.contains('\\')
-            }) {
-                return Err(TorrentError::InvalidTorrentMetadata(
-                    "A torrent file contains an unsafe path component.".to_string(),
-                ));
-            }
+            validate_torrent_path_components(&components)?;
 
             let extension = Path::new(filename)
                 .extension()
                 .and_then(|extension| extension.to_str())
                 .filter(|extension| !extension.is_empty())
                 .map(str::to_ascii_lowercase);
+            let (category, is_executable_or_script) = classify_torrent_file(extension.as_deref());
 
             Ok(TorrentPreviewFile {
                 index,
@@ -1274,6 +1486,8 @@ fn preview_metadata<ByteBuf: AsRef<[u8]>>(
                 filename: filename.clone(),
                 size_bytes: file.len.to_string(),
                 extension,
+                category,
+                is_executable_or_script,
                 selected: true,
             })
         })
@@ -1472,6 +1686,150 @@ mod tests {
     }
 
     #[test]
+    fn torrent_paths_are_portable_unicode_and_reject_escape_components() {
+        assert!(
+            validate_torrent_path_components(&["展示".to_string(), "résumé.mp4".to_string(),])
+                .is_ok()
+        );
+        for unsafe_component in ["..", ".", "C:", "../outside", "folder\\file", "/root"] {
+            assert!(
+                validate_torrent_path_components(&[
+                    unsafe_component.to_string(),
+                    "file.txt".to_string(),
+                ])
+                .is_err(),
+                "component should be rejected: {unsafe_component}"
+            );
+        }
+        assert_eq!(
+            classify_torrent_file(Some("MKV")),
+            (TorrentFileCategory::Video, false)
+        );
+        assert_eq!(
+            classify_torrent_file(Some("Mp3")),
+            (TorrentFileCategory::Audio, false)
+        );
+        assert_eq!(
+            classify_torrent_file(Some("ZIP")),
+            (TorrentFileCategory::Archive, false)
+        );
+        assert_eq!(
+            classify_torrent_file(Some("pdf")),
+            (TorrentFileCategory::Document, false)
+        );
+        for extension in ["exe", "msi", "bat", "cmd", "ps1", "scr", "js", "vbs"] {
+            assert_eq!(
+                classify_torrent_file(Some(extension)),
+                (TorrentFileCategory::Other, true),
+                "extension should be listed as executable or script: {extension}"
+            );
+        }
+    }
+
+    #[test]
+    fn insufficient_space_is_rejected_unless_the_user_explicitly_overrides() {
+        assert!(matches!(
+            validate_available_space(11, Some(10), false),
+            Err(TorrentError::InsufficientDiskSpace {
+                selected_bytes: 11,
+                available_bytes: 10
+            })
+        ));
+        assert!(validate_available_space(10, Some(10), false).is_ok());
+        assert!(validate_available_space(11, None, false).is_ok());
+        assert!(validate_available_space(11, Some(10), true).is_ok());
+        assert_eq!(selected_file_size(&[1_000, 2_000, 3_000], &[0, 2]), 4_000);
+    }
+
+    #[test]
+    fn output_path_validation_keeps_files_under_the_selected_folder() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let destination = temp.path().join("destination");
+        fs::create_dir_all(&destination).expect("create destination");
+        assert!(
+            validate_torrent_paths_for_output(&destination, &["folder/資料.txt".to_string()])
+                .is_ok()
+        );
+        assert!(matches!(
+            validate_torrent_paths_for_output(&destination, &["folder/../outside.txt".to_string()]),
+            Err(TorrentError::UnsafeTorrentPath)
+        ));
+    }
+
+    #[tokio::test]
+    async fn large_unicode_file_lists_are_inspected_without_starting_a_torrent() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let output = temp.path().join("downloads");
+        fs::create_dir_all(&output).expect("create downloads");
+        let mut info = b"d5:filesl".to_vec();
+        for index in 0..3_000 {
+            let filename = format!("資料-{index:05}.pdf");
+            info.extend_from_slice(b"d6:lengthi1e4:pathl");
+            info.extend_from_slice(format!("{}:", filename.len()).as_bytes());
+            info.extend_from_slice(filename.as_bytes());
+            info.extend_from_slice(b"ee");
+        }
+        info.extend_from_slice(b"e4:name6:Bundle12:piece lengthi16384e6:pieces20:");
+        info.extend_from_slice(&[0; 20]);
+        let mut metainfo = b"d4:info".to_vec();
+        metainfo.extend_from_slice(&info);
+        metainfo.extend_from_slice(b"ee");
+
+        let session = Session::new_with_opts(
+            output.clone(),
+            SessionOptions {
+                dht: None,
+                listen: None,
+                persistence: None,
+                ..SessionOptions::default()
+            },
+        )
+        .await
+        .expect("create test session");
+        let service = TorrentService::with_session(session, output.clone()).expect("service");
+        let preview = service
+            .inspect_source(
+                AddTorrent::from_bytes(metainfo),
+                &output,
+                TorrentSourceType::TorrentFile,
+            )
+            .await
+            .expect("inspect the large torrent");
+
+        assert_eq!(preview.files.len(), 3_000);
+        assert_eq!(preview.files[0].filename, "資料-00000.pdf");
+        assert!(preview.files.iter().all(|file| {
+            file.category == TorrentFileCategory::Document && file.size_bytes == "1"
+        }));
+        assert!(service.get_torrents().expect("list torrents").is_empty());
+        service.api.session().stop().await;
+    }
+
+    #[tokio::test]
+    async fn free_space_query_uses_a_validated_directory_handle() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let default_directory = temp.path().join("downloads");
+        fs::create_dir_all(&default_directory).expect("create downloads");
+        let session = Session::new_with_opts(
+            default_directory.clone(),
+            SessionOptions {
+                dht: None,
+                listen: None,
+                persistence: None,
+                ..SessionOptions::default()
+            },
+        )
+        .await
+        .expect("create test session");
+        let service = TorrentService::with_session(session, default_directory).expect("service");
+        assert!(service
+            .output_directory_free_space(service.default_directory_id())
+            .expect("query free space")
+            .is_some());
+        service.api.session().stop().await;
+    }
+
+    #[test]
     fn accepts_http_and_https_torrent_urls_only() {
         assert!(validate_torrent_url("https://example.test/file.torrent").is_ok());
         assert!(validate_torrent_url("http://example.test/file.torrent").is_ok());
@@ -1565,7 +1923,7 @@ mod tests {
         fs::write(&torrent_file, ONE_BYTE_TORRENT).expect("write torrent metadata");
 
         let file_selection = service
-            .register_torrent_file(torrent_file)
+            .register_torrent_file(torrent_file.clone())
             .expect("stage the selected file without starting it");
         assert_eq!(file_selection.file_name, "sample.torrent");
 
@@ -1582,12 +1940,31 @@ mod tests {
         assert!(service.get_torrents().expect("read queue").is_empty());
 
         let added = service
-            .start_inspected_torrent(&preview.preview_id, &selected.id, &[0])
+            .start_inspected_torrent(&preview.preview_id, &selected.id, &[0], false)
             .await
             .expect("start the inspected local torrent");
 
         assert_eq!(added.output_directory, "selected");
         assert_eq!(added.total_bytes, 1);
+
+        let duplicate_file = service
+            .register_torrent_file(torrent_file)
+            .expect("stage the existing torrent again");
+        let duplicate_preview = service
+            .inspect_selected_torrent_file(&duplicate_file.id, &selected.id)
+            .await
+            .expect("inspect the duplicate torrent");
+        let duplicate = duplicate_preview
+            .existing_torrent
+            .as_ref()
+            .expect("duplicate metadata is returned");
+        assert_eq!(duplicate.id, added.id);
+        assert!(matches!(
+            service
+                .start_inspected_torrent(&duplicate_preview.preview_id, &selected.id, &[0], false)
+                .await,
+            Err(TorrentError::DuplicateTorrent)
+        ));
         assert!(matches!(
             service
                 .inspect_selected_torrent_file(&file_selection.id, &selected.id)
@@ -1633,7 +2010,7 @@ mod tests {
             .await
             .expect("inspect torrent metadata");
         let added = service
-            .start_inspected_torrent(&preview.preview_id, &selected.id, &[0])
+            .start_inspected_torrent(&preview.preview_id, &selected.id, &[0], false)
             .await
             .expect("start inspected torrent");
         let details = service
@@ -1714,7 +2091,7 @@ mod tests {
             .await
             .expect("inspect nested torrent");
         let added = service
-            .start_inspected_torrent(&preview.preview_id, &directory.id, &[1])
+            .start_inspected_torrent(&preview.preview_id, &directory.id, &[1], false)
             .await
             .expect("start with only the second file selected");
 
@@ -1987,19 +2364,19 @@ mod tests {
         assert!(service.get_torrents().expect("read queue").is_empty());
         assert!(matches!(
             service
-                .start_inspected_torrent(&preview.preview_id, &directory.id, &[])
+                .start_inspected_torrent(&preview.preview_id, &directory.id, &[], false)
                 .await,
             Err(TorrentError::NoFilesSelected)
         ));
         assert!(matches!(
             service
-                .start_inspected_torrent(&preview.preview_id, &directory.id, &[usize::MAX])
+                .start_inspected_torrent(&preview.preview_id, &directory.id, &[usize::MAX], false)
                 .await,
             Err(TorrentError::InvalidFileSelection)
         ));
         assert!(service.get_torrents().expect("read queue").is_empty());
         let started = service
-            .start_inspected_torrent(&preview.preview_id, &directory.id, &[1])
+            .start_inspected_torrent(&preview.preview_id, &directory.id, &[1], false)
             .await
             .expect("start only the selected file");
         assert_eq!(started.output_directory, "downloads");
@@ -2156,7 +2533,7 @@ mod tests {
             .await
             .expect("inspect unfinished torrent");
         let pending = service
-            .start_inspected_torrent(&pending_preview.preview_id, &selected.id, &[1])
+            .start_inspected_torrent(&pending_preview.preview_id, &selected.id, &[1], false)
             .await
             .expect("start unfinished torrent");
         let pending = service
@@ -2258,6 +2635,13 @@ mod tests {
         assert_eq!(restored_completed.state, TorrentState::Completed);
         assert_eq!(restored_completed.completed_at, completed_at);
         assert_eq!(restored_completed.id, completed_id);
+        let completed_duplicate = restored_service
+            .find_existing_torrent(&completed.info_hash)
+            .expect("check completed history");
+        assert_eq!(
+            completed_duplicate.map(|torrent| torrent.state),
+            Some(TorrentState::Completed)
+        );
         let restored_details = restored_service
             .get_torrent_details(restored_pending.id)
             .expect("read restored torrent details");

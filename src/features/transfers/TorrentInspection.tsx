@@ -1,6 +1,6 @@
-import { useMemo, useRef, useState, type CSSProperties, type UIEvent } from "react";
-import { Check, ChevronDown, ChevronRight, File, Folder, FolderOpen, ListChecks, ListX, Maximize2, Minimize2 } from "lucide-react";
-import type { DownloadDirectory, TorrentPreview } from "../../lib/desktop";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type UIEvent } from "react";
+import { AlertTriangle, Check, ChevronDown, ChevronRight, File, Folder, FolderOpen, HardDrive, ListChecks, ListX, Maximize2, Minimize2 } from "lucide-react";
+import { describeError, getOutputDirectoryFreeSpace, type DownloadDirectory, type TorrentPreview } from "../../lib/desktop";
 import { formatExactBytes } from "./torrentPresentation";
 import {
   buildTorrentPreviewTree,
@@ -23,8 +23,10 @@ interface TorrentInspectionProps {
   busy: boolean;
   error: string;
   onBack: () => void;
+  onCancelDuplicate: () => void;
   onSelectDirectory: () => Promise<void>;
-  onStart: (previewId: string, fileIndices: number[]) => Promise<boolean>;
+  onStart: (previewId: string, fileIndices: number[], allowInsufficientSpace: boolean) => Promise<boolean>;
+  onViewExistingTorrent: (torrentId: number) => void;
 }
 
 export function TorrentInspection({
@@ -34,8 +36,10 @@ export function TorrentInspection({
   busy,
   error,
   onBack,
+  onCancelDuplicate,
   onSelectDirectory,
   onStart,
+  onViewExistingTorrent,
 }: TorrentInspectionProps) {
   const tree = useMemo(() => buildTorrentPreviewTree(preview.files), [preview.files]);
   const [selected, setSelected] = useState(() =>
@@ -47,7 +51,32 @@ export function TorrentInspection({
       .map((node) => node.id),
   ));
   const [scrollTop, setScrollTop] = useState(0);
+  const [diskSpace, setDiskSpace] = useState<{
+    directoryId: string;
+    loading: boolean;
+    bytes: bigint | null;
+    error: string | null;
+  } | null>(null);
+  const [spaceOverrideKey, setSpaceOverrideKey] = useState("");
   const viewportRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const directoryId = selectedDirectory?.id;
+    if (!directoryId) {
+      setDiskSpace(null);
+      return;
+    }
+    let cancelled = false;
+    setDiskSpace({ directoryId, loading: true, bytes: null, error: null });
+    void getOutputDirectoryFreeSpace(directoryId).then((value) => {
+      if (cancelled) return;
+      setDiskSpace({ directoryId, loading: false, bytes: value === null ? null : BigInt(value), error: null });
+    }).catch((reason: unknown) => {
+      if (cancelled) return;
+      setDiskSpace({ directoryId, loading: false, bytes: null, error: describeError(reason) });
+    });
+    return () => { cancelled = true; };
+  }, [selectedDirectory?.id]);
 
   const rows = useMemo(() => flattenVisible(tree.roots, expanded), [tree.roots, expanded]);
   const selectedCounts = useMemo(() => {
@@ -66,6 +95,44 @@ export function TorrentInspection({
     }
     return total;
   }, [preview.files, selected]);
+  const fileTypeSummaries = useMemo(() => {
+    const labels = [
+      ["video", "Videos"],
+      ["audio", "Audio"],
+      ["archive", "Archives"],
+      ["document", "Documents"],
+      ["other", "Other"],
+    ] as const;
+    const summaries = new Map(labels.map(([category, label]) => [category, {
+      category,
+      label,
+      count: 0,
+      selectedCount: 0,
+      bytes: 0n,
+    }]));
+    for (const file of preview.files) {
+      const summary = summaries.get(file.category);
+      if (!summary) continue;
+      summary.count += 1;
+      summary.bytes += BigInt(file.sizeBytes);
+      if (selected.has(file.index)) summary.selectedCount += 1;
+    }
+    return [...summaries.values()].filter((summary) => summary.count > 0);
+  }, [preview.files, selected]);
+
+  const currentDiskSpace = diskSpace?.directoryId === selectedDirectory?.id ? diskSpace : null;
+  const preflightKey = `${selectedDirectory?.id ?? ""}:${selectedBytes}`;
+  const allowInsufficientSpace = spaceOverrideKey === preflightKey;
+  const freeSpaceBytes = currentDiskSpace?.bytes ?? null;
+  const insufficientSpace = freeSpaceBytes !== null && selectedBytes > freeSpaceBytes;
+  const spaceCheckLoading = currentDiskSpace?.loading ?? Boolean(selectedDirectory?.id);
+  const remainingBytes = freeSpaceBytes !== null && !insufficientSpace
+    ? freeSpaceBytes - selectedBytes
+    : null;
+  const remainingLabel = insufficientSpace
+    ? `−${formatExactBytes(selectedBytes - freeSpaceBytes)}`
+    : remainingBytes === null ? "—" : `~${formatExactBytes(remainingBytes)}`;
+  const hasExecutableOrScript = preview.files.some((file) => file.isExecutableOrScript);
 
   const firstVisible = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
   const visibleCount = Math.ceil(310 / ROW_HEIGHT) + OVERSCAN * 2;
@@ -133,6 +200,42 @@ export function TorrentInspection({
           {preview.isPrivate && <span>Private</span>}
         </div>
       </div>
+
+      {preview.existingTorrent && (
+        <section className="torrent-inspection__duplicate" role="alert">
+          <div className="torrent-inspection__notice-copy">
+            <strong>This torrent is already in your library.</strong>
+            <span>{preview.existingTorrent.name || preview.name} · {preview.existingTorrent.state}</span>
+          </div>
+          <div className="torrent-inspection__notice-actions">
+            <button className="secondary-button" type="button" onClick={() => onViewExistingTorrent(preview.existingTorrent!.id)}>
+              View existing torrent
+            </button>
+            <button className="text-button" type="button" onClick={onCancelDuplicate}>Cancel</button>
+          </div>
+        </section>
+      )}
+
+      <section className="torrent-inspection__types" aria-label="Torrent file types">
+        <div className="torrent-inspection__section-title">File types</div>
+        <div className="torrent-inspection__type-list">
+          {fileTypeSummaries.map((summary) => (
+            <div className="torrent-inspection__type-row" key={summary.category}>
+              <strong>{summary.label}</strong>
+              <span>{summary.count.toLocaleString()} {summary.count === 1 ? "file" : "files"}</span>
+              <span>{formatExactBytes(summary.bytes)}</span>
+              <span className="torrent-inspection__type-selected">{summary.selectedCount.toLocaleString()} selected</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {hasExecutableOrScript && (
+        <div className="torrent-inspection__script-warning" role="note">
+          <AlertTriangle size={14} aria-hidden="true" />
+          <span>This torrent contains executable or script files. Only run files from sources you trust.</span>
+        </div>
+      )}
 
       <div className="torrent-inspection__file-toolbar">
         <div className="torrent-inspection__selection-actions">
@@ -255,6 +358,40 @@ export function TorrentInspection({
         <strong>{formatExactBytes(selectedBytes)} selected</strong>
       </div>
 
+      <section className={`torrent-inspection__space${insufficientSpace ? " is-insufficient" : ""}`} aria-label="Destination space check" aria-live="polite">
+        <div className="torrent-inspection__space-heading">
+          <HardDrive size={14} aria-hidden="true" />
+          <strong>Destination space</strong>
+        </div>
+        <div className="torrent-inspection__space-metrics">
+          <div><span>Selected files</span><strong>{formatExactBytes(selectedBytes)}</strong></div>
+          <div><span>Free disk space</span><strong>{spaceCheckLoading ? "Checking…" : freeSpaceBytes === null ? "Unavailable" : formatExactBytes(freeSpaceBytes)}</strong></div>
+          <div><span>Remaining after download</span><strong>{remainingLabel}</strong></div>
+        </div>
+        {insufficientSpace && (
+          <>
+            <p className="torrent-inspection__space-warning" role="alert">
+              Selected files exceed the available space by {formatExactBytes(selectedBytes - freeSpaceBytes)}.
+            </p>
+            <label className="torrent-inspection__space-override">
+              <input
+                type="checkbox"
+                checked={allowInsufficientSpace}
+                onChange={(event) => setSpaceOverrideKey(event.target.checked ? preflightKey : "")}
+                disabled={busy}
+              />
+              I understand and want to start anyway
+            </label>
+          </>
+        )}
+        {currentDiskSpace?.error && (
+          <p className="torrent-inspection__space-unavailable" role="status">Could not check free space: {currentDiskSpace.error}</p>
+        )}
+        {!spaceCheckLoading && freeSpaceBytes === null && !currentDiskSpace?.error && (
+          <p className="torrent-inspection__space-unavailable">Free space could not be determined for this destination.</p>
+        )}
+      </section>
+
       <div className="add-dialog__destination">
         <div className="add-dialog__destination-icon" aria-hidden="true"><Folder size={15} /></div>
         <div className="add-dialog__destination-content">
@@ -270,17 +407,19 @@ export function TorrentInspection({
 
       {error && <p className="add-dialog__error" role="alert">{error}</p>}
 
-      <div className="torrent-inspection__actions">
-        <button className="secondary-button" type="button" onClick={onBack} disabled={busy}>Back</button>
-        <button
-          className="primary-button"
-          type="button"
-          disabled={busy || selected.size === 0 || !selectedDirectory?.id}
-          onClick={() => void onStart(preview.previewId, [...selected])}
-        >
-          {busy ? "Starting download…" : "Start Download"}
-        </button>
-      </div>
+      {!preview.existingTorrent && (
+        <div className="torrent-inspection__actions">
+          <button className="secondary-button" type="button" onClick={onBack} disabled={busy}>Back</button>
+          <button
+            className="primary-button"
+            type="button"
+            disabled={busy || selected.size === 0 || !selectedDirectory?.id || spaceCheckLoading || (insufficientSpace && !allowInsufficientSpace)}
+            onClick={() => void onStart(preview.previewId, [...selected], allowInsufficientSpace)}
+          >
+            {busy ? "Starting download…" : insufficientSpace ? "Start anyway" : "Start Download"}
+          </button>
+        </div>
+      )}
     </section>
   );
 }

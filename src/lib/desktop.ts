@@ -33,7 +33,15 @@ export interface TorrentPreviewFile {
   filename: string;
   sizeBytes: string;
   extension: string | null;
+  category: "video" | "audio" | "archive" | "document" | "other";
+  isExecutableOrScript: boolean;
   selected: boolean;
+}
+
+export interface ExistingTorrent {
+  id: number;
+  name: string | null;
+  state: TorrentState;
 }
 
 export interface TorrentPreview {
@@ -45,6 +53,7 @@ export interface TorrentPreview {
   trackers: string[];
   isPrivate: boolean;
   files: TorrentPreviewFile[];
+  existingTorrent: ExistingTorrent | null;
 }
 
 export interface DownloadDirectoryList {
@@ -138,6 +147,10 @@ export function selectDownloadDirectory(): Promise<DownloadDirectory | null> {
   return invoke<DownloadDirectory | null>("select_download_directory");
 }
 
+export function getOutputDirectoryFreeSpace(outputDirectoryId: string): Promise<string | null> {
+  return invoke<string | null>("get_output_directory_free_space", { outputDirectoryId });
+}
+
 export function getTorrents(): Promise<TorrentStatus[]> {
   return invoke<TorrentStatus[]>("get_torrents");
 }
@@ -209,11 +222,13 @@ export function startInspectedTorrent(
   previewId: string,
   outputDirectoryId: string,
   selectedFileIndices: number[],
+  allowInsufficientSpace = false,
 ): Promise<TorrentStatus> {
   return invoke<TorrentStatus>("start_inspected_torrent", {
     previewId,
     outputDirectoryId,
     selectedFileIndices,
+    allowInsufficientSpace,
   });
 }
 

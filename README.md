@@ -42,6 +42,8 @@ Torque is a cross-platform desktop BitTorrent client built with a Tauri shell, a
 
 - Add torrents from magnet links, local `.torrent` files, and HTTP/HTTPS torrent URLs.
 - Inspect torrent metadata and browse the complete nested file tree before downloading; choose exactly which files to include.
+- Review file-type totals, available destination space, and a neutral notice when executable or script files are present.
+- Detect torrents already in the active, paused, completed, or saved history library before starting a second session.
 - Select whole folders with selected, unselected, and indeterminate checkbox states, or choose files individually.
 - Change a torrent's file selection later from its Files tab; search large file lists and sort by name, size, or progress.
 - Choose a destination folder with the native folder picker; Torque remembers it for future downloads.
@@ -154,6 +156,10 @@ Select **Add torrent**, choose a source type, and set the destination folder. To
 
 Torque validates inputs in the interface and again in Rust. Invalid inputs and backend errors remain visible so they can be corrected. The selected folder becomes the remembered default for later downloads. File selection is passed to librqbit when the user confirms, and unselected torrent files are not downloaded.
 
+Before starting, Torque groups inspected files into video, audio, archive, document, and other types, showing their counts and sizes. Executable and script extensions (`.exe`, `.msi`, `.bat`, `.cmd`, `.ps1`, `.scr`, `.js`, and `.vbs`) produce a neutral trust reminder; extensions alone are not treated as evidence of malware. The inspection also compares the selected file size with free space reported for the selected destination. If space appears insufficient, Torque explains the difference and requires an explicit **Start anyway** choice. The backend repeats this check at start time; free-space estimates are volume-level snapshots and may change while a download is running.
+
+Torque checks the inspected info hash against rqbit's active session and persisted library, including paused, completed, and history entries. A match offers **View existing torrent** or **Cancel**; starting also repeats the duplicate check in Rust so the same hash cannot create a second session. Torrent file components are validated as portable relative paths, and existing symlink targets beneath the destination are checked for containment before the engine starts.
+
 ### Changing file selection
 
 Open a torrent's **Files** tab to review every file's size, selected/skipped state, downloaded bytes, progress, and status. Use the search box and sort menu to narrow or order large lists. Folder checkboxes select or skip their files together; a partially selected folder displays an indeterminate checkbox. If a search is active, a folder checkbox acts on matching files in that folder. Press **Save selection** to apply changes. Selection edits are available after rqbit has initialized the torrent and while it is active or paused; completed sessions can also be changed when rqbit keeps them available. At least one file must remain selected; use **Pause** to stop all transfer activity. Changes are sent as validated file indexes, not paths.
@@ -188,7 +194,7 @@ Torque stores preferences, the last selected folder, torrent identifiers, destin
 
 ## Architecture
 
-The React frontend calls typed Tauri command wrappers. Tauri commands adapt native pickers and delegate torrent work to `TorrentService`. The service owns the long-lived `librqbit` session and uses its `list_only` metadata path to inspect local files, torrent URLs, and magnet links without registering or downloading torrent contents. Validated metainfo is held behind a short-lived opaque preview ID in Rust; the frontend receives only torrent/file metadata and file indexes. On explicit confirmation, the service starts that inspected metainfo with selected file indexes and destination. For active torrents, the service validates selection indexes against librqbit's metadata before calling `update_only_files`. File status maps the same ordered indexes to inclusion, downloaded bytes, progress, and state; selection is retained by the engine session and app state.
+The React frontend calls typed Tauri command wrappers. Tauri commands adapt native pickers and delegate torrent work to `TorrentService`. The service owns the long-lived `librqbit` session and uses its `list_only` metadata path to inspect local files, torrent URLs, and magnet links without registering or downloading torrent contents. Validated metainfo is held behind a short-lived opaque preview ID in Rust; the frontend receives only torrent/file metadata and file indexes. Preview metadata includes normalized file-type groups, executable/script flags, and any existing library match. Free-space lookup accepts only a registered opaque destination ID. On explicit confirmation, the service repeats hash, directory, path-containment, selection-index, and disk-space checks before starting that inspected metainfo with selected file indexes and destination. For active torrents, the service validates selection indexes against librqbit's metadata before calling `update_only_files`. File status maps the same ordered indexes to inclusion, downloaded bytes, progress, and state; selection is retained by the engine session and app state.
 
 The nested file tree is assembled in a dedicated frontend helper and rendered as a flattened, virtualized view for both pre-download inspection and each transfer's Files tab. `TorrentFilesPanel` owns local edits, search, sort, folder tri-state, and the save action; transfer rows remain coupled to app-level torrent statuses rather than rqbit types.
 
@@ -200,7 +206,7 @@ To add another authorized source, implement `SearchProvider` in `src-tauri/src/d
 
 ## Security
 
-The frontend does not receive unrestricted filesystem access. Native file and folder pickers are invoked by Rust, and selected folders are represented to the frontend by opaque IDs. The narrow Tauri capability grants only the window theme permission required by the appearance setting. Discovery requests are sent by the Rust provider adapter to its fixed official API host; provider data is treated as untrusted text. Search results cannot invoke torrent start commands: they must pass through the existing inspection and explicit-start flow. Opening a completed download's folder uses the native opener plugin; arbitrary command execution is not exposed.
+The frontend does not receive unrestricted filesystem access. Native file and folder pickers are invoked by Rust, and selected folders are represented to the frontend by opaque IDs. The narrow Tauri capability grants only the window theme permission required by the appearance setting. Discovery requests are sent by the Rust provider adapter to its fixed official API host; provider data is treated as untrusted text. Search results cannot invoke torrent start commands: they must pass through the existing inspection and explicit-start flow. Before starting, Rust rejects empty, dot, parent, rooted, drive-prefixed, separator-injected, and control-character path components, and checks existing output-path symlinks remain inside the canonical destination. Opening a completed download's folder uses the native opener plugin; arbitrary command execution is not exposed.
 
 ## Project structure
 
@@ -238,6 +244,7 @@ pnpm-lock.yaml            Pinned frontend dependency graph
 - There is no system tray or close-to-tray behavior. Closing the window exits the app; the session is restored on the next launch.
 - Removing a torrent keeps its downloaded files. A separate delete-payload action is not implemented.
 - Peer counts and upload speeds are shown when the engine provides them; unavailable values appear as a dash.
+- Free-space estimates depend on the mounted filesystem's available-space API and can change after the check. If the platform cannot report space, Torque explains that the estimate is unavailable and lets the user proceed.
 - The details screen shows peer lifetime counters and masked addresses, but the current rqbit API does not provide per-peer speeds/progress, tracker announce timestamps or counts, or a seed-only count.
 - Discovery currently includes only the Internet Archive adapter and filters for explicit CC0 1.0, CC BY 4.0, and CC BY-SA 4.0 license metadata. It does not independently verify rights claims, and it has no seeder/leech counts from that catalog.
 - A dedicated frontend linter and frontend unit-test setup are not configured yet.

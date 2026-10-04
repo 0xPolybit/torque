@@ -334,7 +334,15 @@ export function useTorrentQueue(enabled: boolean) {
     inspectTorrentFile: (torrentFileId: string) =>
       inspect(() => inspectDesktopTorrentFile(torrentFileId, selectedDirectoryId)),
     discardTorrentPreview: discardPreview,
-    startInspectedTorrent: (previewId: string, fileIndices: number[]) =>
-      add(() => startDesktopInspectedTorrent(previewId, selectedDirectoryId, fileIndices)),
+    startInspectedTorrent: (
+      previewId: string,
+      fileIndices: number[],
+      allowInsufficientSpace = false,
+    ) => add(() => startDesktopInspectedTorrent(
+      previewId,
+      selectedDirectoryId,
+      fileIndices,
+      allowInsufficientSpace,
+    )),
   };
 }

@@ -69,20 +69,11 @@ pub enum ProviderHealthState {
     RateLimited,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchFilters {
     pub category: Option<String>,
     pub provider_id: Option<String>,
-}
-
-impl Default for SearchFilters {
-    fn default() -> Self {
-        Self {
-            category: None,
-            provider_id: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

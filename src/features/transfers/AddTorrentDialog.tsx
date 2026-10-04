@@ -22,7 +22,8 @@ interface AddTorrentDialogProps {
   onInspectUrl: (url: string) => Promise<TorrentPreview | null>;
   onInspectFile: (selectionId: string) => Promise<TorrentPreview | null>;
   onDiscardPreview: (previewId: string) => Promise<void>;
-  onStartPreview: (previewId: string, fileIndices: number[]) => Promise<boolean>;
+  onStartPreview: (previewId: string, fileIndices: number[], allowInsufficientSpace?: boolean) => Promise<boolean>;
+  onViewExistingTorrent: (torrentId: number) => void;
   initialSource?: TorrentDownloadSource | null;
 }
 
@@ -42,6 +43,7 @@ export function AddTorrentDialog({
   onInspectFile,
   onDiscardPreview,
   onStartPreview,
+  onViewExistingTorrent,
   initialSource,
 }: AddTorrentDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -174,14 +176,20 @@ export function AddTorrentDialog({
             busy={busy}
             error={error}
             onBack={() => void backToSource()}
+            onCancelDuplicate={() => void close()}
             onSelectDirectory={onSelectDirectory}
-            onStart={async (previewId, fileIndices) => {
-              const started = await onStartPreview(previewId, fileIndices);
+            onStart={async (previewId, fileIndices, allowInsufficientSpace) => {
+              const started = await onStartPreview(previewId, fileIndices, allowInsufficientSpace);
               if (started) {
                 setPreview(null);
                 onClose();
               }
               return started;
+            }}
+            onViewExistingTorrent={async (torrentId) => {
+              await onDiscardPreview(preview.previewId);
+              setPreview(null);
+              onViewExistingTorrent(torrentId);
             }}
           />
         ) : (

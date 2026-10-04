@@ -38,6 +38,7 @@ pub fn run() {
             commands::inspect_torrent_file,
             commands::inspect_torrent_url,
             commands::start_inspected_torrent,
+            commands::get_output_directory_free_space,
             commands::discard_torrent_preview,
             commands::get_torrents,
             commands::get_torrent_status,

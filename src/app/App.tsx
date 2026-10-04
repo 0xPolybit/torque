@@ -222,6 +222,11 @@ export default function App() {
           onInspectFile={queue.inspectTorrentFile}
           onDiscardPreview={queue.discardTorrentPreview}
           onStartPreview={queue.startInspectedTorrent}
+          onViewExistingTorrent={(torrentId) => {
+            setShowAddTorrent(false);
+            setDiscoverySource(null);
+            setDetailsTorrentId(torrentId);
+          }}
         />
       )}
 

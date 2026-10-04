@@ -1,10 +1,16 @@
-import type { TorrentPreviewFile } from "../../lib/desktop";
+export interface TorrentTreeDataFile {
+  index: number;
+  path: string;
+  filename: string;
+  sizeBytes: string;
+  selected: boolean;
+}
 
 export interface TorrentTreeFile {
   type: "file";
   id: string;
   name: string;
-  file: TorrentPreviewFile;
+  file: TorrentTreeDataFile;
 }
 
 export interface TorrentTreeDirectory {
@@ -26,7 +32,7 @@ export interface TorrentPreviewTree {
   ancestorsByFile: Map<number, string[]>;
 }
 
-export function buildTorrentPreviewTree(files: TorrentPreviewFile[]): TorrentPreviewTree {
+export function buildTorrentPreviewTree(files: TorrentTreeDataFile[]): TorrentPreviewTree {
   const roots: TorrentTreeNode[] = [];
   const directories: TorrentTreeDirectory[] = [];
   const rootMap = new Map<string, TorrentTreeNode>();

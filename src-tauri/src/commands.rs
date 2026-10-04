@@ -164,10 +164,27 @@ pub async fn start_inspected_torrent(
     preview_id: String,
     output_directory_id: String,
     selected_file_indices: Vec<usize>,
+    allow_insufficient_space: bool,
 ) -> Result<TorrentStatus, String> {
     service
-        .start_inspected_torrent(&preview_id, &output_directory_id, &selected_file_indices)
+        .start_inspected_torrent(
+            &preview_id,
+            &output_directory_id,
+            &selected_file_indices,
+            allow_insufficient_space,
+        )
         .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn get_output_directory_free_space(
+    service: State<'_, TorrentService>,
+    output_directory_id: String,
+) -> Result<Option<String>, String> {
+    service
+        .output_directory_free_space(&output_directory_id)
+        .map(|bytes| bytes.map(|value| value.to_string()))
         .map_err(|error| error.to_string())
 }
 
