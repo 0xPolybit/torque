@@ -1,12 +1,19 @@
+import { memo, useState } from "react";
 import {
   ArrowUpRight,
+  ArrowDownToLine,
+  ArrowUpToLine,
   AlertCircle,
+  ChevronDown,
+  ChevronUp,
   Clock3,
   Download,
   FileDown,
+  FileX2,
   FolderDown,
   FolderOpen,
   LoaderCircle,
+  MoreHorizontal,
   Pause,
   Play,
   RotateCw,
@@ -14,7 +21,7 @@ import {
   Upload,
   Users,
 } from "lucide-react";
-import type { TorrentControlAction, TorrentStatus } from "../../lib/desktop";
+import type { QueueMove, TorrentControlAction, TorrentStatus } from "../../lib/desktop";
 import { TorrentStateBadge } from "./TorrentStateBadge";
 import {
   estimateTimeRemaining,
@@ -30,12 +37,15 @@ interface TorrentRowProps {
   onPause: (torrentId: number) => Promise<boolean>;
   onResume: (torrentId: number) => Promise<boolean>;
   onRetry: (torrentId: number) => Promise<boolean>;
-  onRemove: (torrentId: number) => Promise<boolean>;
+  onRemove: (torrentId: number, deleteFiles?: boolean) => Promise<boolean>;
   onOpenFolder: (torrentId: number) => Promise<boolean>;
   onOpenDetails: (torrentId: number) => void;
+  onMove: (torrentId: number, movement: QueueMove) => Promise<boolean>;
+  selected: boolean;
+  onSelect: (torrentId: number) => void;
 }
 
-export function TorrentRow({
+function TorrentRowComponent({
   torrent,
   pendingAction = null,
   actionError = null,
@@ -45,7 +55,11 @@ export function TorrentRow({
   onRemove,
   onOpenFolder,
   onOpenDetails,
+  onMove,
+  selected,
+  onSelect,
 }: TorrentRowProps) {
+  const [actionsOpen, setActionsOpen] = useState(false);
   const title = torrent.name?.trim() || "Waiting for torrent metadata";
   const progress = Number.isFinite(torrent.progressPercent)
     ? Math.max(0, Math.min(100, torrent.progressPercent))
@@ -78,11 +92,20 @@ export function TorrentRow({
           ? "Removing…"
           : pendingAction === "open-folder"
             ? "Opening…"
+          : pendingAction === "move-queue"
+            ? "Moving…"
             : null;
   const PrimaryIcon = primaryAction?.icon;
 
   return (
-    <article className={`torrent-row torrent-row--${presentation.filter}`} role="listitem" aria-busy={actionBusy}>
+    <article
+      className={`torrent-row torrent-row--${presentation.filter}${selected ? " is-selected" : ""}`}
+      role="listitem"
+      aria-busy={actionBusy}
+      aria-selected={selected}
+      tabIndex={0}
+      onFocusCapture={() => onSelect(torrent.id)}
+    >
       <div className="torrent-row__header">
         <div className="torrent-row__identity">
           <div className="torrent-row__icon" aria-hidden="true">
@@ -107,6 +130,15 @@ export function TorrentRow({
           </div>
         </div>
         <div className="torrent-row__header-side">
+          {torrent.state === "queued" && torrent.queuePosition !== null && (
+            <div className="torrent-row__queue-controls" aria-label={`Queue position ${torrent.queuePosition}`}>
+              <span>#{torrent.queuePosition}</span>
+              <button type="button" title="Move to top" aria-label="Move to top of queue" disabled={actionBusy || torrent.queuePosition === 1} onClick={() => void onMove(torrent.id, "top")}><ArrowUpToLine size={13} /></button>
+              <button type="button" title="Move up" aria-label="Move up in queue" disabled={actionBusy || torrent.queuePosition === 1} onClick={() => void onMove(torrent.id, "up")}><ChevronUp size={14} /></button>
+              <button type="button" title="Move down" aria-label="Move down in queue" disabled={actionBusy} onClick={() => void onMove(torrent.id, "down")}><ChevronDown size={14} /></button>
+              <button type="button" title="Move to bottom" aria-label="Move to bottom of queue" disabled={actionBusy} onClick={() => void onMove(torrent.id, "bottom")}><ArrowDownToLine size={13} /></button>
+            </div>
+          )}
           <TorrentStateBadge torrent={torrent} />
           {primaryAction && (
             <button
@@ -123,18 +155,33 @@ export function TorrentRow({
               <span>{actionLabel && pendingAction === primaryAction.kind ? actionLabel : primaryAction.label}</span>
             </button>
           )}
-          <button
-            className="torrent-row__remove"
-            type="button"
-            aria-label={torrent.state === "completed" ? "Remove from list, keep downloaded files" : "Remove torrent, keep downloaded files"}
-            title={torrent.state === "completed" ? "Remove from list · keep files" : "Remove · keep downloaded files"}
-            disabled={actionBusy}
-            onClick={() => void onRemove(torrent.id)}
-          >
-            {pendingAction === "remove"
-              ? <LoaderCircle size={14} className="torrent-row__action-spinner" aria-hidden="true" />
-              : <Trash2 size={14} aria-hidden="true" />}
-          </button>
+          <div className="torrent-row__menu-wrap">
+            <button
+              className="torrent-row__remove"
+              type="button"
+              aria-label="More torrent actions"
+              aria-expanded={actionsOpen}
+              title="More actions"
+              disabled={actionBusy}
+              onClick={() => setActionsOpen((open) => !open)}
+            >
+              {pendingAction === "remove"
+                ? <LoaderCircle size={14} className="torrent-row__action-spinner" aria-hidden="true" />
+                : <MoreHorizontal size={15} aria-hidden="true" />}
+            </button>
+            {actionsOpen && (
+              <div className="torrent-row__menu" role="menu" aria-label="Torrent actions">
+                <button type="button" role="menuitem" onClick={() => { setActionsOpen(false); void onRemove(torrent.id, false); }}>
+                  <Trash2 size={13} aria-hidden="true" />
+                  <span>{torrent.state === "completed" ? "Remove from list" : "Remove torrent"}<small>Keep downloaded files</small></span>
+                </button>
+                <button className="torrent-row__menu-delete" type="button" role="menuitem" onClick={() => { setActionsOpen(false); void onRemove(torrent.id, true); }}>
+                  <FileX2 size={13} aria-hidden="true" />
+                  <span>Delete downloaded files<small>Remove data from disk</small></span>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -193,3 +240,34 @@ export function TorrentRow({
     </article>
   );
 }
+
+function sameVisibleStatus(left: TorrentStatus, right: TorrentStatus): boolean {
+  return left.id === right.id
+    && left.name === right.name
+    && left.outputDirectory === right.outputDirectory
+    && left.state === right.state
+    && left.error === right.error
+    && left.progressPercent === right.progressPercent
+    && left.downloadedBytes === right.downloadedBytes
+    && left.totalBytes === right.totalBytes
+    && left.downloadSpeedBytesPerSecond === right.downloadSpeedBytesPerSecond
+    && left.uploadSpeedBytesPerSecond === right.uploadSpeedBytesPerSecond
+    && left.connectedPeers === right.connectedPeers
+    && left.queuePosition === right.queuePosition
+    && left.engineAvailable === right.engineAvailable;
+}
+
+export const TorrentRow = memo(TorrentRowComponent, (previous, next) =>
+  sameVisibleStatus(previous.torrent, next.torrent)
+  && previous.pendingAction === next.pendingAction
+  && previous.actionError === next.actionError
+  && previous.selected === next.selected
+  && previous.onPause === next.onPause
+  && previous.onResume === next.onResume
+  && previous.onRetry === next.onRetry
+  && previous.onRemove === next.onRemove
+  && previous.onOpenFolder === next.onOpenFolder
+  && previous.onOpenDetails === next.onOpenDetails
+  && previous.onMove === next.onMove
+  && previous.onSelect === next.onSelect,
+);

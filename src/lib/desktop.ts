@@ -13,6 +13,13 @@ export type ThemePreference = "system" | "dark" | "light";
 export interface AppPreferences {
   resumeUnfinishedOnStartup: boolean;
   startDownloadsAutomatically: boolean;
+  askForDestinationEveryTime: boolean;
+  maximumSimultaneousDownloads: number;
+  downloadLimitBytesPerSecond: number | null;
+  uploadLimitBytesPerSecond: number | null;
+  minimizeToTray: boolean;
+  confirmBeforeRemovingTorrent: boolean;
+  confirmBeforeDeletingFiles: boolean;
   theme: ThemePreference;
 }
 
@@ -74,7 +81,8 @@ export interface TorrentFile {
 
 export type TorrentState = "queued" | "downloading" | "paused" | "completed" | "error";
 export type TorrentSourceType = "magnet" | "torrent_file" | "torrent_url" | "unknown";
-export type TorrentControlAction = "pause" | "resume" | "retry" | "remove" | "open-folder" | "update-files";
+export type TorrentControlAction = "pause" | "resume" | "retry" | "remove" | "open-folder" | "update-files" | "move-queue";
+export type QueueMove = "up" | "down" | "top" | "bottom";
 
 export interface TorrentPeerStatus {
   address: string;
@@ -121,6 +129,7 @@ export interface TorrentStatus {
   completedAt: number | null;
   engineAvailable: boolean;
   fileSelectionEditable: boolean;
+  queuePosition: number | null;
 }
 
 export function getAppInfo(): Promise<AppInfo> {
@@ -185,8 +194,12 @@ export function retryTorrent(torrentId: number): Promise<TorrentStatus> {
   return invoke<TorrentStatus>("retry_torrent", { torrentId });
 }
 
-export function removeTorrent(torrentId: number): Promise<void> {
-  return invoke<void>("remove_torrent", { torrentId });
+export function removeTorrent(torrentId: number, deleteFiles = false): Promise<void> {
+  return invoke<void>("remove_torrent", { torrentId, deleteFiles });
+}
+
+export function moveQueuedTorrent(torrentId: number, movement: QueueMove): Promise<TorrentStatus> {
+  return invoke<TorrentStatus>("move_queued_torrent", { torrentId, movement });
 }
 
 export function openTorrentFolder(torrentId: number): Promise<void> {

@@ -27,6 +27,13 @@ pub enum ThemePreference {
 pub struct AppPreferences {
     pub resume_unfinished_on_startup: bool,
     pub start_downloads_automatically: bool,
+    pub ask_for_destination_every_time: bool,
+    pub maximum_simultaneous_downloads: usize,
+    pub download_limit_bytes_per_second: Option<u64>,
+    pub upload_limit_bytes_per_second: Option<u64>,
+    pub minimize_to_tray: bool,
+    pub confirm_before_removing_torrent: bool,
+    pub confirm_before_deleting_files: bool,
     pub theme: ThemePreference,
 }
 
@@ -35,6 +42,13 @@ impl Default for AppPreferences {
         Self {
             resume_unfinished_on_startup: true,
             start_downloads_automatically: true,
+            ask_for_destination_every_time: false,
+            maximum_simultaneous_downloads: 3,
+            download_limit_bytes_per_second: None,
+            upload_limit_bytes_per_second: None,
+            minimize_to_tray: false,
+            confirm_before_removing_torrent: true,
+            confirm_before_deleting_files: true,
             theme: ThemePreference::Dark,
         }
     }
@@ -110,6 +124,7 @@ impl PersistedTorrent {
             completed_at: self.completed_at,
             engine_available: false,
             file_selection_editable: false,
+            queue_position: None,
         }
     }
 }
@@ -124,6 +139,10 @@ struct AppStateFile {
     preferences: AppPreferences,
     #[serde(default)]
     torrents: HashMap<String, PersistedTorrent>,
+    #[serde(default)]
+    queue_order: Vec<String>,
+    #[serde(default)]
+    queued_info_hashes: Vec<String>,
 }
 
 impl Default for AppStateFile {
@@ -133,6 +152,8 @@ impl Default for AppStateFile {
             last_download_directory: None,
             preferences: AppPreferences::default(),
             torrents: HashMap::new(),
+            queue_order: Vec::new(),
+            queued_info_hashes: Vec::new(),
         }
     }
 }
@@ -214,6 +235,27 @@ impl ApplicationPersistence {
             .lock()
             .map_err(|_| "state lock poisoned".to_string())?;
         state.preferences = preferences;
+        self.write_locked(&state)
+    }
+
+    pub fn queue_state(&self) -> Result<(Vec<String>, Vec<String>), String> {
+        self.state
+            .lock()
+            .map(|state| (state.queue_order.clone(), state.queued_info_hashes.clone()))
+            .map_err(|_| "state lock poisoned".to_string())
+    }
+
+    pub fn set_queue_state(
+        &self,
+        queue_order: Vec<String>,
+        queued_info_hashes: Vec<String>,
+    ) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "state lock poisoned".to_string())?;
+        state.queue_order = queue_order;
+        state.queued_info_hashes = queued_info_hashes;
         self.write_locked(&state)
     }
 
@@ -449,6 +491,8 @@ mod tests {
         );
         let defaults = persistence.preferences().expect("default preferences");
         assert!(defaults.start_downloads_automatically);
+        assert_eq!(defaults.maximum_simultaneous_downloads, 3);
+        assert_eq!(defaults.download_limit_bytes_per_second, None);
         assert_eq!(defaults.theme, ThemePreference::Dark);
         assert!(!path.exists());
         assert!(fs::read_dir(temp.path())
@@ -476,6 +520,7 @@ mod tests {
                 resume_unfinished_on_startup: false,
                 start_downloads_automatically: false,
                 theme: ThemePreference::Light,
+                ..AppPreferences::default()
             })
             .expect("save preference");
         drop(persistence);
@@ -486,6 +531,25 @@ mod tests {
         assert!(!preferences.resume_unfinished_on_startup);
         assert!(!preferences.start_downloads_automatically);
         assert_eq!(preferences.theme, ThemePreference::Light);
+    }
+
+    #[test]
+    fn queued_torrents_and_order_survive_reopen() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let path = temp.path().join("application-state.json");
+        let persistence = ApplicationPersistence::open(&path);
+        persistence
+            .set_queue_state(
+                vec!["active-hash".into(), "queued-b".into(), "queued-a".into()],
+                vec!["queued-b".into(), "queued-a".into()],
+            )
+            .expect("persist queue");
+        drop(persistence);
+
+        let restored = ApplicationPersistence::open(path);
+        let (order, waiting) = restored.queue_state().expect("restore queue");
+        assert_eq!(order, ["active-hash", "queued-b", "queued-a"]);
+        assert_eq!(waiting, ["queued-b", "queued-a"]);
     }
 
     #[test]

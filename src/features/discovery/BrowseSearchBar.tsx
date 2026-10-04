@@ -1,5 +1,5 @@
 import { ChevronDown, Search, X } from "lucide-react";
-import type { FormEvent } from "react";
+import type { FormEvent, Ref } from "react";
 import type { SearchCategory, SearchProviderInfo } from "../../lib/discovery";
 
 export type BrowseSort = "relevance" | "newest" | "size" | "seeders";
@@ -19,6 +19,7 @@ interface BrowseSearchBarProps {
   onSortChange: (sort: BrowseSort) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onCancel: () => void;
+  inputRef?: Ref<HTMLInputElement>;
 }
 
 const categories: { value: SearchCategory | "all"; label: string }[] = [
@@ -50,6 +51,7 @@ export function BrowseSearchBar({
   onSortChange,
   onSubmit,
   onCancel,
+  inputRef,
 }: BrowseSearchBarProps) {
   return (
     <form className="browse-toolbar" onSubmit={onSubmit} role="search" aria-label="Browse content">
@@ -57,6 +59,7 @@ export function BrowseSearchBar({
         <Search size={19} strokeWidth={1.8} aria-hidden="true" />
         <label className="visually-hidden" htmlFor="browse-query">Search open content</label>
         <input
+          ref={inputRef}
           id="browse-query"
           type="search"
           value={query}

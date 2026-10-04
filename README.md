@@ -30,6 +30,7 @@ Torque is a cross-platform desktop BitTorrent client built with a Tauri shell, a
 - [Torrent details](#torrent-details)
 - [Browse and search](#browse-and-search)
 - [Settings and persistence](#settings-and-persistence)
+- [Queue, bandwidth, and shortcuts](#queue-bandwidth-and-shortcuts)
 - [Architecture](#architecture)
 - [Security](#security)
 - [Project structure](#project-structure)
@@ -48,16 +49,21 @@ Torque is a cross-platform desktop BitTorrent client built with a Tauri shell, a
 - Change a torrent's file selection later from its Files tab; search large file lists and sort by name, size, or progress.
 - Choose a destination folder with the native folder picker; Torque remembers it for future downloads.
 - Track progress, downloaded and total size, download and upload speeds, peers, ETA, and current state.
+- Queue downloads with saved positions, reorder waiting torrents, start the next item automatically, and cap simultaneous downloads.
+- Set global download and upload speed limits using librqbit's session limiter; per-torrent runtime limits are not exposed by the current engine API.
+- Monitor aggregate download/upload rates, peers, active transfers, and queued transfers in the compact status bar.
 - Open a five-tab details view for live overview, files, peers, trackers, and torrent metainfo.
-- Pause and resume downloads, retry errors, open a completed download's folder, and remove torrents while keeping their files.
+- Pause and resume downloads, retry errors, open a completed download's folder, remove torrents while keeping their files, or explicitly delete their downloaded data.
 - Filter active, queued, paused, completed, and failed downloads.
-- Set the default download location, choose whether downloads start and resume automatically, and select System, Dark, or Light theme.
+- Choose a default destination or ask for a folder each time; configure automatic start/resume, concurrent downloads, confirmation behavior, and System, Dark, or Light theme.
+- Optionally keep Torque in the system tray when its window is closed.
 - Restore the rqbit session and download list across application restarts.
 - Browse Internet Archive items explicitly labeled with supported open licenses, with provider filtering, category filtering, sorting, recent searches, and pagination.
 - Review provider details, license, source page, info hash when supplied, and available torrent mechanism before inspection.
 - Inspect a discovered torrent through the existing metadata and file-selection step; opening a result never starts a transfer directly.
 - View completed downloads in History and reach Settings from primary navigation.
 - Use keyboard-accessible dialogs, inline validation, loading feedback, and status notifications.
+- Use Ctrl/Cmd shortcuts for adding torrents, pasting magnet links, Browse search, selected-download controls, and removal.
 
 ## Screenshots
 
@@ -188,9 +194,37 @@ Search runs in the Rust backend and has a 12-second HTTP client timeout, a descr
 
 ## Settings and persistence
 
-Settings include the default download folder, automatic start and resume behavior, and System, Dark, or Light theme. The default preferences start new downloads immediately, resume unfinished torrents on launch, and use Dark theme.
+Settings include a default download folder, **Ask for destination every time**, automatic start and resume behavior, a maximum of 1–64 simultaneous downloads (default 3), session-wide download and upload caps, removal/deletion confirmations, close-to-tray behavior, and System, Dark, or Light theme. Defaults start new downloads automatically, resume unfinished torrents on launch, use unlimited bandwidth, confirm removals and file deletion, keep tray behavior off, and use Dark theme.
 
-Torque stores preferences, the last selected folder, torrent identifiers, destinations, statuses, and timestamps in `application-state.json` in the Tauri app-data directory. rqbit stores its session snapshot and fast-resume data there as well. Torrent payloads are not copied into application state. If a saved location is unavailable, Torque reports the issue without preventing startup.
+When **Ask for destination every time** is enabled, Torque opens the native folder picker before inspecting a new torrent and requires a selection for that add flow. Otherwise it reuses the last chosen folder. Torrent destinations remain attached to their downloads.
+
+Torque stores preferences, the last selected folder, torrent identifiers, destinations, statuses, timestamps, and queue order in `application-state.json` in the Tauri app-data directory. The waiting list is persisted as info hashes. rqbit stores its session snapshot and fast-resume data there as well. Torrent payloads are not copied into application state. At launch Torque restores the engine, reconciles queue order, and starts up to the configured concurrency limit when resume-on-launch is enabled; excess torrents stay queued. If a saved location is unavailable, Torque reports the issue without preventing startup.
+
+The session-wide bandwidth controls update rqbit's `Session.ratelimits` directly and take effect for all managed torrents. A per-torrent runtime cap is not exposed by librqbit's current API, so Torque does not emulate one.
+
+When **Keep Torque in the system tray** is enabled, closing the desktop window hides it. Use the tray icon to show the window or quit. The tray icon and menu are available in desktop builds; mobile targets do not use this behavior.
+
+### Keyboard shortcuts
+
+| Shortcut | Action |
+| --- | --- |
+| Ctrl/Cmd + O | Open the native picker to add a `.torrent` file |
+| Ctrl/Cmd + V | If focus is outside an editable field, detect a magnet link from the clipboard and open Add Torrent |
+| Ctrl/Cmd + F | Open Browse and focus its search field |
+| Space | Pause or resume the selected/focused download when the queue row has focus |
+| Delete | Remove the selected torrent using the configured confirmation behavior |
+
+Shortcuts do not override normal typing or button activation inside form controls and dialogs.
+
+## Queue, bandwidth, and shortcuts
+
+Unfinished downloads are ordered in a persisted queue. The waiting entries show a position and provide move up, move down, move to top, and move to bottom actions. The concurrency scheduler starts waiting torrents automatically as active slots become free. Paused downloads are not treated as waiting entries until the user resumes them; resuming while all slots are occupied places the torrent at the end of the queue.
+
+The **Maximum simultaneous downloads** setting accepts 1–64 and defaults to 3. Lowering the cap pauses the lowest-priority active transfers into the waiting queue; raising it can start waiting downloads immediately. **Start downloads automatically** controls new torrents; when off they are added paused. **Resume on launch** determines whether unfinished transfers are restarted after app startup, still respecting the concurrency cap.
+
+Download and upload caps accept custom KB/s or MB/s values, or Unlimited. These are session-wide librqbit limits shared by all torrents. The global status bar totals current download speed, upload speed, connected peers when reported, active transfers, and waiting downloads. Transfer statistics refresh every two seconds, with unchanged rows retaining their rendered state.
+
+Removing from Torque keeps downloaded files. The row actions menu also offers **Delete downloaded files**; the Rust service asks librqbit to remove only the data associated with that managed torrent, and the UI requires confirmation according to Settings. If rqbit no longer has the torrent session, Torque refuses to delete files because it cannot verify ownership. Closing to the system tray is optional and only applies to desktop builds.
 
 ## Architecture
 
@@ -198,7 +232,11 @@ The React frontend calls typed Tauri command wrappers. Tauri commands adapt nati
 
 The nested file tree is assembled in a dedicated frontend helper and rendered as a flattened, virtualized view for both pre-download inspection and each transfer's Files tab. `TorrentFilesPanel` owns local edits, search, sort, folder tri-state, and the save action; transfer rows remain coupled to app-level torrent statuses rather than rqbit types.
 
-The compact transfer row opens `TorrentDetailsDialog` by torrent ID. Overview and Files use the queue's existing two-second `TorrentStatus` snapshots, so progress and file selection do not have a second source of truth. Opening the dialog invokes `get_torrent_details` once for the less-frequently-needed peer snapshot and metainfo fields; a manual refresh repeats only that request. The Rust service maps rqbit models into UI-neutral `TorrentDetails` and masks peer addresses before returning them. Static source type is the only added application-state metadata; torrent metainfo remains owned by the rqbit session.
+The compact transfer row opens `TorrentDetailsDialog` by torrent ID. Overview and Files use the queue's existing two-second `TorrentStatus` snapshots, so progress and file selection do not have a second source of truth. Opening the dialog invokes `get_torrent_details` once for the less-frequently-needed peer snapshot and metainfo fields; a manual refresh repeats only that request. The Rust service maps rqbit models into UI-neutral `TorrentDetails` and masks peer addresses before returning them. Torrent metainfo remains owned by the rqbit session.
+
+`TorrentService` owns a separate persisted queue order and waiting list. Starting a torrent either adds it directly to a free slot or asks rqbit to keep it paused until a slot opens. The scheduler advances waiting items when a transfer is paused, removed, completed, or when settings increase available slots. Queue movement changes only waiting order. The frontend sees `queuePosition` and the normalized `queued` status, never librqbit queue internals.
+
+Status refresh is limited to a two-second snapshot. The hook reuses unchanged torrent objects between snapshots and memoized rows compare only the values they render, so a speed update repaints the affected transfer instead of re-rendering the full list. Long lists also use browser content-visibility containment.
 
 Content discovery is a separate Rust service beside the torrent service. `SearchProvider` defines source identity, icon, capabilities, paged normalized search, details, download-source lookup, and health checks. `SearchService` registers independent provider implementations and aggregates their results without making one provider failure fail the whole search. The Internet Archive adapter uses its documented Advanced Search and Metadata APIs, filters out items without an explicit supported open license, and validates that the corresponding archive torrent file is listed before returning its URL. Tauri exposes typed search, health, cancellation, details, and source commands; it does not pass provider-specific payloads or filesystem access to React.
 
@@ -215,10 +253,12 @@ src/
   app/                    App shell, desktop connection, queue and preferences state
   components/             Sidebar, backend status, and toast notifications
   features/discovery/     Browse controls, results, details, recent searches, and provider state
-  features/transfers/     Add/inspection/settings/details dialogs, virtual file tree, filters, and transfer rows
+  features/transfers/     Add/inspection/settings/details/removal dialogs, virtual file tree, filters, and transfer rows
     torrentPreviewTree.ts Build a nested file model from inspected torrent paths
     TorrentFilesPanel.tsx Searchable, sortable per-torrent file selection and progress
-    TorrentDetailsDialog.tsx Five-tab details view backed by queue snapshots and an on-demand details command
+  TorrentDetailsDialog.tsx Five-tab details view backed by queue snapshots and an on-demand details command
+  SettingsDialog.tsx      Persisted queue, bandwidth, appearance, confirmation, and tray preferences
+  RemoveTorrentDialog.tsx Explicit keep-files or delete-files confirmation
   lib/                    Typed Tauri transfer, discovery, and preference command wrappers
   styles.css              Desktop layout, themes, controls, and responsive rules
 src-tauri/
@@ -226,7 +266,7 @@ src-tauri/
   icons/                  Cross-platform application icons, including icon.ico
   src/commands.rs         Tauri commands and native picker adapters
   src/discovery/          SearchProvider contract, registry, models, and Internet Archive adapter
-  src/torrent/service.rs  rqbit session, validation, restoration, and status mapping
+  src/torrent/service.rs  rqbit session, scheduler, rate limits, validation, restoration, and status mapping
   src/torrent/persistence.rs
                           Versioned application preferences and queue metadata
   src/lib.rs              Service setup and command registration
@@ -240,9 +280,10 @@ pnpm-lock.yaml            Pinned frontend dependency graph
 
 ## Known limitations
 
-- Download and upload speed caps are not exposed in Settings. rqbit supports per-torrent rate options, but the app does not yet provide clean runtime-wide controls for active downloads. See [`AddTorrentOptions`](https://docs.rs/librqbit/9.0.1/librqbit/struct.AddTorrentOptions.html).
-- There is no system tray or close-to-tray behavior. Closing the window exits the app; the session is restored on the next launch.
-- Removing a torrent keeps its downloaded files. A separate delete-payload action is not implemented.
+- Download and upload limits are global to the librqbit session. The current librqbit API does not expose clean per-torrent runtime rate caps.
+- Queue concurrency counts active and initializing torrents. A torrent in an engine error state may need a manual retry; failed torrents do not consume a slot.
+- Delete downloaded files requires the rqbit session to be available so the engine can safely resolve torrent-owned files. When that session is missing, Torque keeps the files and reports why.
+- Close-to-tray depends on a desktop environment that supports system tray icons; mobile targets do not expose it.
 - Peer counts and upload speeds are shown when the engine provides them; unavailable values appear as a dash.
 - Free-space estimates depend on the mounted filesystem's available-space API and can change after the check. If the platform cannot report space, Torque explains that the estimate is unavailable and lets the user proceed.
 - The details screen shows peer lifetime counters and masked addresses, but the current rqbit API does not provide per-peer speeds/progress, tracker announce timestamps or counts, or a seed-only count.

@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     collections::HashSet,
     fs,
+    num::NonZeroU32,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -14,6 +15,7 @@ use librqbit::{
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tokio::sync::Mutex as AsyncMutex;
 use url::Url;
 use uuid::Uuid;
 
@@ -82,6 +84,12 @@ pub enum TorrentError {
     Persistence(String),
     #[error("The application state could not be locked.")]
     ApplicationStateLock,
+    #[error("The queue state could not be locked.")]
+    QueueLock,
+    #[error("Maximum simultaneous downloads must be between 1 and 64.")]
+    InvalidConcurrentDownloadLimit,
+    #[error("Bandwidth limits must be no greater than 4 GiB/s.")]
+    InvalidBandwidthLimit,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -174,6 +182,15 @@ pub enum TorrentState {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueueMove {
+    Up,
+    Down,
+    Top,
+    Bottom,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TorrentSourceType {
@@ -255,6 +272,15 @@ pub struct TorrentStatus {
     pub completed_at: Option<u64>,
     pub engine_available: bool,
     pub file_selection_editable: bool,
+    pub queue_position: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct QueueState {
+    /// Order of unfinished transfers, normalized lowercase info hashes.
+    order: Vec<String>,
+    /// Transfers intentionally held by the concurrency scheduler.
+    waiting: Vec<String>,
 }
 
 pub struct TorrentService {
@@ -266,6 +292,8 @@ pub struct TorrentService {
     default_directory_id: String,
     persistence: ApplicationPersistence,
     missing_torrent_ids: Mutex<HashMap<usize, String>>,
+    queue: Mutex<QueueState>,
+    queue_operations: AsyncMutex<()>,
 }
 
 impl TorrentService {
@@ -326,6 +354,9 @@ impl TorrentService {
         persistence: ApplicationPersistence,
     ) -> Result<Self, TorrentError> {
         let api = Api::new(Arc::clone(&session), None);
+        let (queue_order, queued_info_hashes) = persistence
+            .queue_state()
+            .map_err(TorrentError::Persistence)?;
         let service = Self {
             api,
             session,
@@ -335,7 +366,14 @@ impl TorrentService {
             default_directory_id: Uuid::new_v4().to_string(),
             persistence,
             missing_torrent_ids: Mutex::new(HashMap::new()),
+            queue: Mutex::new(QueueState {
+                order: queue_order,
+                waiting: queued_info_hashes,
+            }),
+            queue_operations: AsyncMutex::new(()),
         };
+
+        service.apply_rate_limits()?;
 
         let canonical_directory = validate_directory(&default_output_directory)?;
         service
@@ -400,14 +438,246 @@ impl TorrentService {
             .map_err(TorrentError::Persistence)
     }
 
-    pub fn set_preferences(
+    pub async fn set_preferences(
         &self,
         preferences: AppPreferences,
     ) -> Result<AppPreferences, TorrentError> {
+        validate_preferences(&preferences)?;
         self.persistence
             .set_preferences(preferences)
             .map_err(TorrentError::Persistence)?;
+        self.apply_rate_limits()?;
+        let _guard = self.queue_operations.lock().await;
+        self.schedule_queue_locked().await?;
         self.preferences()
+    }
+
+    fn apply_rate_limits(&self) -> Result<(), TorrentError> {
+        let preferences = self.preferences()?;
+        let to_engine_limit = |limit: Option<u64>| -> Result<Option<NonZeroU32>, TorrentError> {
+            limit
+                .map(|bytes| {
+                    u32::try_from(bytes)
+                        .ok()
+                        .and_then(NonZeroU32::new)
+                        .ok_or(TorrentError::InvalidBandwidthLimit)
+                })
+                .transpose()
+        };
+        self.session.ratelimits.set_download_bps(to_engine_limit(
+            preferences.download_limit_bytes_per_second,
+        )?);
+        self.session
+            .ratelimits
+            .set_upload_bps(to_engine_limit(preferences.upload_limit_bytes_per_second)?);
+        Ok(())
+    }
+
+    fn persist_queue_locked(&self, queue: &QueueState) -> Result<(), TorrentError> {
+        self.persistence
+            .set_queue_state(queue.order.clone(), queue.waiting.clone())
+            .map_err(TorrentError::Persistence)
+    }
+
+    fn decorate_torrents(&self, torrents: &mut [TorrentStatus]) -> Result<(), TorrentError> {
+        let live_hashes: HashSet<_> = torrents
+            .iter()
+            .filter(|torrent| torrent.state != TorrentState::Completed)
+            .map(|torrent| torrent.info_hash.to_ascii_lowercase())
+            .collect();
+        let waiting_hashes: HashSet<_> = torrents
+            .iter()
+            .filter(|torrent| torrent.engine_available && torrent.state != TorrentState::Completed)
+            .map(|torrent| torrent.info_hash.to_ascii_lowercase())
+            .collect();
+        let mut queue = self.queue.lock().map_err(|_| TorrentError::QueueLock)?;
+        let previous = queue.clone();
+        queue.order.retain(|hash| live_hashes.contains(hash));
+        for torrent in torrents
+            .iter()
+            .filter(|torrent| torrent.state != TorrentState::Completed)
+        {
+            let hash = torrent.info_hash.to_ascii_lowercase();
+            if !queue.order.contains(&hash) {
+                queue.order.push(hash);
+            }
+        }
+        let order_hashes: HashSet<_> = queue.order.iter().cloned().collect();
+        queue
+            .waiting
+            .retain(|hash| order_hashes.contains(hash) && waiting_hashes.contains(hash));
+        if *queue != previous {
+            self.persist_queue_locked(&queue)?;
+        }
+        for torrent in torrents {
+            let hash = torrent.info_hash.to_ascii_lowercase();
+            torrent.queue_position = queue
+                .waiting
+                .iter()
+                .position(|entry| entry == &hash)
+                .map(|position| position + 1);
+            if torrent.queue_position.is_some()
+                && torrent.engine_available
+                && matches!(torrent.state, TorrentState::Paused | TorrentState::Queued)
+            {
+                torrent.state = TorrentState::Queued;
+            }
+        }
+        Ok(())
+    }
+
+    async fn schedule_queue_locked(&self) -> Result<(), TorrentError> {
+        let preferences = self.preferences()?;
+        let mut torrents = self.get_torrents()?;
+        let waiting_before: HashSet<String> = self
+            .queue
+            .lock()
+            .map_err(|_| TorrentError::QueueLock)?
+            .waiting
+            .iter()
+            .cloned()
+            .collect();
+
+        let active = {
+            let mut queue = self.queue.lock().map_err(|_| TorrentError::QueueLock)?;
+            let previous = queue.clone();
+            queue.waiting.retain(|hash| {
+                torrents.iter().any(|torrent| {
+                    torrent.info_hash.eq_ignore_ascii_case(hash)
+                        && torrent.engine_available
+                        && torrent.state != TorrentState::Error
+                        && torrent.state != TorrentState::Completed
+                })
+            });
+
+            let mut active: Vec<_> = torrents
+                .iter()
+                .filter(|torrent| {
+                    torrent.state == TorrentState::Downloading
+                        || (torrent.state == TorrentState::Queued
+                            && !waiting_before.contains(&torrent.info_hash.to_ascii_lowercase()))
+                })
+                .cloned()
+                .collect();
+            active.sort_by_key(|torrent| {
+                queue
+                    .order
+                    .iter()
+                    .position(|hash| hash.eq_ignore_ascii_case(&torrent.info_hash))
+                    .unwrap_or(usize::MAX)
+            });
+            if *queue != previous {
+                self.persist_queue_locked(&queue)?;
+            }
+            active
+        };
+
+        for torrent in active
+            .iter()
+            .skip(preferences.maximum_simultaneous_downloads)
+        {
+            self.api
+                .api_torrent_action_pause(TorrentIdOrHash::Id(torrent.id))
+                .await
+                .map_err(|error| TorrentError::Engine(error.to_string()))?;
+            let hash = torrent.info_hash.to_ascii_lowercase();
+            let mut queue = self.queue.lock().map_err(|_| TorrentError::QueueLock)?;
+            if !queue.waiting.contains(&hash) {
+                queue.waiting.push(hash);
+            }
+            self.persist_queue_locked(&queue)?;
+        }
+
+        torrents = self.get_torrents()?;
+        let waiting = self
+            .queue
+            .lock()
+            .map_err(|_| TorrentError::QueueLock)?
+            .waiting
+            .clone();
+        let active_count = torrents
+            .iter()
+            .filter(|torrent| {
+                torrent.state == TorrentState::Downloading
+                    || (torrent.state == TorrentState::Queued
+                        && !waiting.contains(&torrent.info_hash.to_ascii_lowercase()))
+            })
+            .count();
+        let mut available_slots = preferences
+            .maximum_simultaneous_downloads
+            .saturating_sub(active_count);
+
+        for hash in waiting {
+            if available_slots == 0 {
+                break;
+            }
+            let Some(torrent) = torrents
+                .iter()
+                .find(|torrent| torrent.info_hash.eq_ignore_ascii_case(&hash))
+            else {
+                continue;
+            };
+            if matches!(torrent.state, TorrentState::Error | TorrentState::Completed) {
+                continue;
+            }
+            self.api
+                .api_torrent_action_start(TorrentIdOrHash::Id(torrent.id))
+                .await
+                .map_err(|error| TorrentError::Engine(error.to_string()))?;
+            let mut queue = self.queue.lock().map_err(|_| TorrentError::QueueLock)?;
+            queue
+                .waiting
+                .retain(|entry| !entry.eq_ignore_ascii_case(&hash));
+            self.persist_queue_locked(&queue)?;
+            available_slots -= 1;
+        }
+        Ok(())
+    }
+
+    pub async fn refresh_torrents(&self) -> Result<Vec<TorrentStatus>, TorrentError> {
+        let _guard = self.queue_operations.lock().await;
+        self.schedule_queue_locked().await?;
+        self.get_torrents()
+    }
+
+    pub async fn move_queued_torrent(
+        &self,
+        id: usize,
+        movement: QueueMove,
+    ) -> Result<TorrentStatus, TorrentError> {
+        let _guard = self.queue_operations.lock().await;
+        let current = self.get_torrent_status(id)?;
+        let hash = current.info_hash.to_ascii_lowercase();
+        let mut queue = self.queue.lock().map_err(|_| TorrentError::QueueLock)?;
+        reorder_waiting(&mut queue, &hash, movement)?;
+        self.persist_queue_locked(&queue)?;
+        drop(queue);
+        self.get_torrent_status(id)
+    }
+
+    fn remove_from_queue(&self, info_hash: &str) -> Result<(), TorrentError> {
+        let hash = info_hash.to_ascii_lowercase();
+        let mut queue = self.queue.lock().map_err(|_| TorrentError::QueueLock)?;
+        queue.order.retain(|entry| entry != &hash);
+        queue.waiting.retain(|entry| entry != &hash);
+        self.persist_queue_locked(&queue)
+    }
+
+    fn decorate_torrent(&self, status: &mut TorrentStatus) -> Result<(), TorrentError> {
+        let queue = self.queue.lock().map_err(|_| TorrentError::QueueLock)?;
+        let hash = status.info_hash.to_ascii_lowercase();
+        status.queue_position = queue
+            .waiting
+            .iter()
+            .position(|entry| entry == &hash)
+            .map(|position| position + 1);
+        if status.queue_position.is_some()
+            && status.engine_available
+            && matches!(status.state, TorrentState::Paused | TorrentState::Queued)
+        {
+            status.state = TorrentState::Queued;
+        }
+        Ok(())
     }
 
     /// Retains a validated torrent file behind an opaque, single-use frontend ID.
@@ -626,6 +896,7 @@ impl TorrentService {
         selected_file_indices: &[usize],
         allow_insufficient_space: bool,
     ) -> Result<TorrentStatus, TorrentError> {
+        let _guard = self.queue_operations.lock().await;
         let output_directory = self.validate_output_directory(directory_id)?;
         let prepared = self
             .torrent_previews
@@ -665,14 +936,32 @@ impl TorrentService {
         let available_bytes = self.output_directory_free_space(directory_id)?;
         validate_available_space(selected_bytes, available_bytes, allow_insufficient_space)?;
 
-        let start_automatically = self.preferences()?.start_downloads_automatically;
+        let preferences = self.preferences()?;
+        let current = self.get_torrents()?;
+        let waiting = self
+            .queue
+            .lock()
+            .map_err(|_| TorrentError::QueueLock)?
+            .waiting
+            .clone();
+        let active_count = current
+            .iter()
+            .filter(|torrent| {
+                torrent.state == TorrentState::Downloading
+                    || (torrent.state == TorrentState::Queued
+                        && torrent.queue_position.is_none()
+                        && !waiting.contains(&torrent.info_hash.to_ascii_lowercase()))
+            })
+            .count();
+        let will_queue = preferences.start_downloads_automatically
+            && active_count >= preferences.maximum_simultaneous_downloads;
         let response = self
             .api
             .api_add_torrent(
                 AddTorrent::from_bytes(prepared.metainfo.clone()),
                 Some(AddTorrentOptions {
                     output_folder: Some(output_directory.to_string_lossy().into_owned()),
-                    paused: !start_automatically,
+                    paused: !preferences.start_downloads_automatically || will_queue,
                     only_files: Some(only_files),
                     ..AddTorrentOptions::default()
                 }),
@@ -694,6 +983,17 @@ impl TorrentService {
         self.persistence
             .update_source_type(&status.info_hash, prepared.source_type)
             .map_err(TorrentError::Persistence)?;
+        {
+            let mut queue = self.queue.lock().map_err(|_| TorrentError::QueueLock)?;
+            let hash = status.info_hash.to_ascii_lowercase();
+            queue.order.retain(|entry| entry != &hash);
+            queue.order.push(hash.clone());
+            if will_queue && !queue.waiting.contains(&hash) {
+                queue.waiting.push(hash);
+            }
+            self.persist_queue_locked(&queue)?;
+        }
+        self.decorate_torrent(&mut status)?;
         self.discard_torrent_preview(preview_id)?;
         Ok(status)
     }
@@ -735,19 +1035,81 @@ impl TorrentService {
     }
 
     pub async fn pause_torrent(&self, id: usize) -> Result<TorrentStatus, TorrentError> {
+        let _guard = self.queue_operations.lock().await;
+        let hash = self.get_torrent_status(id)?.info_hash.to_ascii_lowercase();
         self.api
             .api_torrent_action_pause(TorrentIdOrHash::Id(id))
             .await
             .map_err(|error| TorrentError::Engine(error.to_string()))?;
-        self.get_torrent_status(id)
+        {
+            let mut queue = self.queue.lock().map_err(|_| TorrentError::QueueLock)?;
+            queue.waiting.retain(|entry| entry != &hash);
+            self.persist_queue_locked(&queue)?;
+        }
+        self.schedule_queue_locked().await?;
+        let mut status = self.get_torrent_status(id)?;
+        self.decorate_torrent(&mut status)?;
+        Ok(status)
     }
 
     pub async fn resume_torrent(&self, id: usize) -> Result<TorrentStatus, TorrentError> {
-        self.start_torrent(id).await
+        self.start_or_queue_torrent(id).await
     }
 
     pub async fn retry_torrent(&self, id: usize) -> Result<TorrentStatus, TorrentError> {
-        self.start_torrent(id).await
+        self.start_or_queue_torrent(id).await
+    }
+
+    async fn start_or_queue_torrent(&self, id: usize) -> Result<TorrentStatus, TorrentError> {
+        let _guard = self.queue_operations.lock().await;
+        let current = self.get_torrents()?;
+        let target = current
+            .iter()
+            .find(|torrent| torrent.id == id)
+            .ok_or_else(|| TorrentError::Status("The torrent is no longer available.".into()))?;
+        let hash = target.info_hash.to_ascii_lowercase();
+        let preferences = self.preferences()?;
+        let active_count = current
+            .iter()
+            .filter(|torrent| {
+                torrent.state == TorrentState::Downloading
+                    || (torrent.state == TorrentState::Queued && torrent.queue_position.is_none())
+            })
+            .count();
+        if active_count >= preferences.maximum_simultaneous_downloads {
+            if target.state == TorrentState::Error {
+                return Err(TorrentError::Engine(
+                    "All download slots are in use. Retry this torrent after a slot opens or pause another download.".to_string(),
+                ));
+            }
+            let mut queue = self.queue.lock().map_err(|_| TorrentError::QueueLock)?;
+            if !queue.order.contains(&hash) {
+                queue.order.push(hash.clone());
+            }
+            if !queue.waiting.contains(&hash) {
+                queue.waiting.push(hash);
+            }
+            self.persist_queue_locked(&queue)?;
+            return self.get_torrent_status(id).and_then(|mut status| {
+                self.decorate_torrent(&mut status)?;
+                Ok(status)
+            });
+        }
+        {
+            let mut queue = self.queue.lock().map_err(|_| TorrentError::QueueLock)?;
+            queue.waiting.retain(|entry| entry != &hash);
+            if !queue.order.contains(&hash) {
+                queue.order.push(hash.clone());
+            }
+            self.persist_queue_locked(&queue)?;
+        }
+        self.api
+            .api_torrent_action_start(TorrentIdOrHash::Id(id))
+            .await
+            .map_err(|error| TorrentError::Engine(error.to_string()))?;
+        let mut status = self.get_torrent_status(id)?;
+        self.decorate_torrent(&mut status)?;
+        Ok(status)
     }
 
     pub async fn update_torrent_file_selection(
@@ -793,40 +1155,47 @@ impl TorrentService {
         self.get_torrent_status(id)
     }
 
-    async fn start_torrent(&self, id: usize) -> Result<TorrentStatus, TorrentError> {
-        self.api
-            .api_torrent_action_start(TorrentIdOrHash::Id(id))
-            .await
-            .map_err(|error| TorrentError::Engine(error.to_string()))?;
-        self.get_torrent_status(id)
-    }
-
     /// Remove the session entry without deleting the downloaded data.
-    pub async fn remove_torrent(&self, id: usize) -> Result<(), TorrentError> {
+    pub async fn remove_torrent(&self, id: usize, delete_files: bool) -> Result<(), TorrentError> {
+        let _guard = self.queue_operations.lock().await;
         if let Some(info_hash) = self
             .missing_torrent_ids
             .lock()
             .map_err(|_| TorrentError::ApplicationStateLock)?
             .remove(&id)
         {
+            if delete_files {
+                return Err(TorrentError::Engine(
+                    "Downloaded files cannot be safely removed because the torrent session is unavailable. The saved files were kept.".to_string(),
+                ));
+            }
             self.persistence
                 .remove_torrent(&info_hash)
                 .map_err(TorrentError::Persistence)?;
+            self.remove_from_queue(&info_hash)?;
             return Ok(());
         }
         let info_hash = self
             .get_torrent_status(id)
             .ok()
             .map(|status| status.info_hash);
-        self.api
-            .api_torrent_action_forget(TorrentIdOrHash::Id(id))
-            .await
-            .map_err(|error| TorrentError::Engine(error.to_string()))?;
+        if delete_files {
+            self.api
+                .api_torrent_action_delete(TorrentIdOrHash::Id(id))
+                .await
+        } else {
+            self.api
+                .api_torrent_action_forget(TorrentIdOrHash::Id(id))
+                .await
+        }
+        .map_err(|error| TorrentError::Engine(error.to_string()))?;
         if let Some(info_hash) = info_hash {
             self.persistence
                 .remove_torrent(&info_hash)
                 .map_err(TorrentError::Persistence)?;
+            self.remove_from_queue(&info_hash)?;
         }
+        self.schedule_queue_locked().await?;
         Ok(())
     }
 
@@ -885,6 +1254,22 @@ impl TorrentService {
             missing_ids.insert(id, record.info_hash.clone());
             torrents.push(record.fallback_status(id));
         }
+        self.decorate_torrents(&mut torrents)?;
+        torrents.sort_by_key(|torrent| {
+            let state_order = match torrent.state {
+                TorrentState::Downloading => 0,
+                TorrentState::Queued => 1,
+                TorrentState::Paused => 2,
+                TorrentState::Error => 3,
+                TorrentState::Completed => 4,
+            };
+            let queue_position = if torrent.state == TorrentState::Queued {
+                torrent.queue_position.unwrap_or(usize::MAX)
+            } else {
+                0
+            };
+            (state_order, queue_position)
+        });
         Ok(torrents)
     }
 
@@ -909,6 +1294,7 @@ impl TorrentService {
         self.persistence
             .update_torrent(&mut status, output_path)
             .map_err(TorrentError::Persistence)?;
+        self.decorate_torrent(&mut status)?;
         Ok(status)
     }
 
@@ -1018,8 +1404,6 @@ impl TorrentService {
             .into_iter()
             .map(|hash| hash.to_ascii_lowercase())
             .collect();
-        let resume = self.preferences()?.resume_unfinished_on_startup;
-
         for record in records {
             if known_hashes.contains(&record.info_hash.to_ascii_lowercase())
                 || !is_valid_info_hash(&record.info_hash)
@@ -1042,7 +1426,7 @@ impl TorrentService {
             };
             let options = AddTorrentOptions {
                 output_folder: Some(record.output_path.to_string_lossy().into_owned()),
-                paused: !resume,
+                paused: true,
                 only_files: record.selected_file_indices.clone(),
                 ..AddTorrentOptions::default()
             };
@@ -1069,75 +1453,89 @@ impl TorrentService {
     }
 
     async fn apply_startup_resume_preference(&self) {
-        let resume = match self.preferences() {
-            Ok(preferences) => preferences.resume_unfinished_on_startup,
+        let preferences = match self.preferences() {
+            Ok(preferences) => preferences,
             Err(error) => {
-                eprintln!("Could not load startup preference: {error}");
+                eprintln!("Could not load startup preferences: {error}");
                 return;
             }
         };
-        for attempt in 0..10 {
-            let ids: Vec<_> = self
-                .api
-                .api_torrent_list_ext(ApiTorrentListOpts { with_stats: true })
-                .torrents
-                .into_iter()
-                .filter_map(|torrent| torrent.id)
-                .collect();
-            let mut pending_initialization = false;
-            for id in ids {
-                let Ok(status) = self.get_torrent_status(id) else {
-                    continue;
-                };
-                let should_start =
-                    resume && matches!(status.state, TorrentState::Paused | TorrentState::Queued);
-                let should_pause = !resume
-                    && matches!(
-                        status.state,
-                        TorrentState::Downloading | TorrentState::Queued
-                    );
-                if !should_start && !should_pause {
-                    continue;
+        let mut torrents = match self.get_torrents() {
+            Ok(torrents) => torrents,
+            Err(error) => {
+                eprintln!("Could not restore the torrent queue: {error}");
+                return;
+            }
+        };
+        let order = match self.queue.lock() {
+            Ok(queue) => queue.order.clone(),
+            Err(_) => return,
+        };
+        torrents.sort_by_key(|torrent| {
+            order
+                .iter()
+                .position(|hash| hash.eq_ignore_ascii_case(&torrent.info_hash))
+                .unwrap_or(usize::MAX)
+        });
+        if let Ok(mut queue) = self.queue.lock() {
+            queue.waiting.clear();
+        }
+
+        let mut active = 0usize;
+        for torrent in torrents
+            .into_iter()
+            .filter(|torrent| torrent.state != TorrentState::Completed && torrent.engine_available)
+        {
+            let should_run = preferences.resume_unfinished_on_startup
+                && active < preferences.maximum_simultaneous_downloads;
+            let result = if should_run {
+                match torrent.state {
+                    TorrentState::Downloading => {
+                        active += 1;
+                        continue;
+                    }
+                    TorrentState::Paused | TorrentState::Queued => {
+                        self.api
+                            .api_torrent_action_start(TorrentIdOrHash::Id(torrent.id))
+                            .await
+                    }
+                    TorrentState::Error | TorrentState::Completed => continue,
                 }
-                let result = if should_start {
+            } else {
+                if matches!(
+                    torrent.state,
+                    TorrentState::Downloading | TorrentState::Queued
+                ) {
                     self.api
-                        .api_torrent_action_start(TorrentIdOrHash::Id(id))
+                        .api_torrent_action_pause(TorrentIdOrHash::Id(torrent.id))
                         .await
+                } else if torrent.state == TorrentState::Paused {
+                    if preferences.resume_unfinished_on_startup {
+                        if let Ok(mut queue) = self.queue.lock() {
+                            queue.waiting.push(torrent.info_hash.to_ascii_lowercase());
+                        }
+                    }
+                    continue;
                 } else {
-                    self.api
-                        .api_torrent_action_pause(TorrentIdOrHash::Id(id))
-                        .await
-                };
-                match result {
-                    Ok(_) => {
-                        let still_unsettled = self
-                            .get_torrent_status(id)
-                            .map(|status| {
-                                if resume {
-                                    matches!(
-                                        status.state,
-                                        TorrentState::Paused | TorrentState::Queued
-                                    )
-                                } else {
-                                    matches!(
-                                        status.state,
-                                        TorrentState::Downloading | TorrentState::Queued
-                                    )
-                                }
-                            })
-                            .unwrap_or(false);
-                        pending_initialization |= still_unsettled;
-                    }
-                    Err(error) => {
-                        eprintln!("Could not apply startup preference to torrent {id}: {error}");
-                        pending_initialization = true;
+                    continue;
+                }
+            };
+            match result {
+                Ok(_) if should_run => active += 1,
+                Ok(_) => {
+                    if preferences.resume_unfinished_on_startup {
+                        if let Ok(mut queue) = self.queue.lock() {
+                            queue.waiting.push(torrent.info_hash.to_ascii_lowercase());
+                        }
                     }
                 }
+                Err(error) => eprintln!("Could not restore torrent {}: {error}", torrent.id),
             }
-            if !pending_initialization || attempt == 9 {
-                break;
+        }
+        if let Ok(queue) = self.queue.lock() {
+            if let Err(error) = self.persist_queue_locked(&queue) {
+                eprintln!("Could not persist restored queue order: {error}");
             }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     }
 }
@@ -1151,6 +1549,46 @@ fn validate_directory(path: &Path) -> Result<PathBuf, TorrentError> {
         ));
     }
     Ok(canonical)
+}
+
+fn validate_preferences(preferences: &AppPreferences) -> Result<(), TorrentError> {
+    if !(1..=64).contains(&preferences.maximum_simultaneous_downloads) {
+        return Err(TorrentError::InvalidConcurrentDownloadLimit);
+    }
+    if preferences
+        .download_limit_bytes_per_second
+        .into_iter()
+        .chain(preferences.upload_limit_bytes_per_second)
+        .any(|limit| limit > u32::MAX as u64)
+    {
+        return Err(TorrentError::InvalidBandwidthLimit);
+    }
+    Ok(())
+}
+
+fn reorder_waiting(
+    queue: &mut QueueState,
+    info_hash: &str,
+    movement: QueueMove,
+) -> Result<(), TorrentError> {
+    let Some(index) = queue.waiting.iter().position(|entry| entry == info_hash) else {
+        return Err(TorrentError::Engine(
+            "Only queued downloads can be reordered.".to_string(),
+        ));
+    };
+    let value = queue.waiting.remove(index);
+    let destination = match movement {
+        QueueMove::Up => index.saturating_sub(1),
+        QueueMove::Down => (index + 1).min(queue.waiting.len()),
+        QueueMove::Top => 0,
+        QueueMove::Bottom => queue.waiting.len(),
+    };
+    queue.waiting.insert(destination, value);
+    let waiting_set: HashSet<_> = queue.waiting.iter().cloned().collect();
+    let waiting_order = queue.waiting.clone();
+    queue.order.retain(|entry| !waiting_set.contains(entry));
+    queue.order.extend(waiting_order);
+    Ok(())
 }
 
 pub(super) fn choose_default_directory(
@@ -1605,6 +2043,7 @@ fn status_from_parts(
             stats.state,
             TorrentStatsState::Live | TorrentStatsState::Paused
         ),
+        queue_position: None,
     }
 }
 
@@ -1650,6 +2089,163 @@ mod tests {
     const ONE_BYTE_TORRENT: &[u8] = b"d4:infod6:lengthi1e4:name5:hello12:piece lengthi16384e6:pieces20:\x11\xf6\xad\x8e\xc5\x2a\x29\x84\xab\xaa\xfd\x7c\x3b\x51\x65\x03\x78\x5c\x20\x72ee";
     const COMPLETE_TORRENT: &[u8] = b"d4:infod6:lengthi5e4:name5:world12:piece lengthi16384e6:pieces20:\x7c\x21\x14\x33\xf0\x20\x71\x59\x77\x41\xe6\xff\x5a\x8e\xa3\x47\x89\xab\xbf\x43ee";
     const NESTED_TORRENT: &[u8] = b"d4:infod5:filesld6:lengthi3e4:pathl4:disc7:one.mkveed6:lengthi5e4:pathl4:disc7:two.srteee4:name4:Show12:piece lengthi16384e6:pieces20:\x11\xf6\xad\x8e\xc5\x2a\x29\x84\xab\xaa\xfd\x7c\x3b\x51\x65\x03\x78\x5c\x20\x72ee";
+
+    #[test]
+    fn queue_order_supports_top_up_down_and_bottom_moves() {
+        let mut queue = QueueState {
+            order: vec!["active".into(), "a".into(), "b".into(), "c".into()],
+            waiting: vec!["a".into(), "b".into(), "c".into()],
+        };
+        reorder_waiting(&mut queue, "b", QueueMove::Up).expect("move up");
+        assert_eq!(queue.waiting, ["b", "a", "c"]);
+        reorder_waiting(&mut queue, "b", QueueMove::Down).expect("move down");
+        assert_eq!(queue.waiting, ["a", "b", "c"]);
+        reorder_waiting(&mut queue, "c", QueueMove::Top).expect("move to top");
+        assert_eq!(queue.waiting, ["c", "a", "b"]);
+        reorder_waiting(&mut queue, "c", QueueMove::Bottom).expect("move to bottom");
+        assert_eq!(queue.waiting, ["a", "b", "c"]);
+        assert_eq!(queue.order, ["active", "a", "b", "c"]);
+    }
+
+    #[test]
+    fn concurrent_download_and_bandwidth_preferences_are_validated() {
+        let mut preferences = AppPreferences::default();
+        assert!(validate_preferences(&preferences).is_ok());
+        preferences.maximum_simultaneous_downloads = 0;
+        assert!(matches!(
+            validate_preferences(&preferences),
+            Err(TorrentError::InvalidConcurrentDownloadLimit)
+        ));
+        preferences.maximum_simultaneous_downloads = 2;
+        preferences.download_limit_bytes_per_second = Some(u32::MAX as u64 + 1);
+        assert!(matches!(
+            validate_preferences(&preferences),
+            Err(TorrentError::InvalidBandwidthLimit)
+        ));
+    }
+
+    #[tokio::test]
+    async fn global_bandwidth_preferences_configure_librqbit_limits() {
+        let temp = tempfile::tempdir().expect("temporary test directory");
+        let output = temp.path().join("downloads");
+        fs::create_dir_all(&output).expect("create downloads");
+        let session = Session::new_with_opts(
+            output.clone(),
+            SessionOptions {
+                dht: None,
+                listen: None,
+                persistence: None,
+                ..SessionOptions::default()
+            },
+        )
+        .await
+        .expect("create test session");
+        let service = TorrentService::with_session(session, output).expect("service");
+        let mut preferences = service.preferences().expect("default preferences");
+        preferences.maximum_simultaneous_downloads = 2;
+        preferences.download_limit_bytes_per_second = Some(512 * 1024);
+        preferences.upload_limit_bytes_per_second = Some(2 * 1024 * 1024);
+        service
+            .set_preferences(preferences)
+            .await
+            .expect("save network preferences");
+        let limits = service.session.ratelimits.get_config();
+        assert_eq!(limits.download_bps, NonZeroU32::new(512 * 1024));
+        assert_eq!(limits.upload_bps, NonZeroU32::new(2 * 1024 * 1024));
+        assert_eq!(
+            service
+                .preferences()
+                .unwrap()
+                .maximum_simultaneous_downloads,
+            2
+        );
+        service.api.session().stop().await;
+    }
+
+    #[tokio::test]
+    async fn concurrency_limit_queues_downloads_and_starts_the_next_in_order() {
+        async fn add(service: &TorrentService, bytes: &[u8]) -> TorrentStatus {
+            let destination = service
+                .validate_output_directory(service.default_directory_id())
+                .expect("registered destination");
+            let preview = service
+                .inspect_source(
+                    AddTorrent::from_bytes(bytes.to_vec()),
+                    &destination,
+                    TorrentSourceType::TorrentFile,
+                )
+                .await
+                .expect("inspect torrent");
+            let file_indices = preview
+                .files
+                .iter()
+                .map(|file| file.index)
+                .collect::<Vec<_>>();
+            service
+                .start_inspected_torrent(
+                    &preview.preview_id,
+                    service.default_directory_id(),
+                    &file_indices,
+                    false,
+                )
+                .await
+                .expect("add torrent")
+        }
+
+        let temp = tempfile::tempdir().expect("temporary test directory");
+        let output = temp.path().join("downloads");
+        fs::create_dir_all(&output).expect("create downloads");
+        let session = Session::new_with_opts(
+            output.clone(),
+            SessionOptions {
+                dht: None,
+                listen: None,
+                persistence: None,
+                ..SessionOptions::default()
+            },
+        )
+        .await
+        .expect("create test session");
+        let service = TorrentService::with_session(session, output).expect("service");
+        let mut preferences = service.preferences().expect("default preferences");
+        preferences.maximum_simultaneous_downloads = 1;
+        service
+            .set_preferences(preferences)
+            .await
+            .expect("set concurrency limit");
+
+        let first = add(&service, ONE_BYTE_TORRENT).await;
+        let second = add(&service, COMPLETE_TORRENT).await;
+        let third = add(&service, NESTED_TORRENT).await;
+        assert_eq!(second.state, TorrentState::Queued);
+        assert_eq!(second.queue_position, Some(1));
+        assert_eq!(third.state, TorrentState::Queued);
+        assert_eq!(third.queue_position, Some(2));
+
+        service
+            .move_queued_torrent(third.id, QueueMove::Top)
+            .await
+            .expect("promote third torrent");
+        service
+            .pause_torrent(first.id)
+            .await
+            .expect("pause active torrent");
+        let refreshed = service.refresh_torrents().await.expect("refresh queue");
+        let next = refreshed
+            .iter()
+            .find(|torrent| torrent.id == third.id)
+            .unwrap();
+        let remaining = refreshed
+            .iter()
+            .find(|torrent| torrent.id == second.id)
+            .unwrap();
+        assert_eq!(
+            next.queue_position, None,
+            "the promoted torrent took the free slot"
+        );
+        assert_eq!(remaining.queue_position, Some(1));
+        service.api.session().stop().await;
+    }
 
     // The skipped README occupies its own later piece; earlier files share the selected file's first piece.
     fn multi_file_download_torrent() -> Vec<u8> {
@@ -2043,7 +2639,7 @@ mod tests {
         assert_ne!(resumed.state, TorrentState::Paused);
 
         service
-            .remove_torrent(added.id)
+            .remove_torrent(added.id, false)
             .await
             .expect("remove torrent without deleting its files");
         assert_eq!(

@@ -9,6 +9,7 @@ import {
   inspectMagnet as inspectDesktopMagnet,
   inspectTorrentFile as inspectDesktopTorrentFile,
   inspectTorrentUrl as inspectDesktopTorrentUrl,
+  moveQueuedTorrent as moveDesktopQueuedTorrent,
   openTorrentFolder as openDesktopTorrentFolder,
   pauseTorrent as pauseDesktopTorrent,
   removeTorrent as removeDesktopTorrent,
@@ -27,6 +28,7 @@ import {
   type TorrentFileSelection,
   type TorrentStatus,
   type TorrentPreview,
+  type QueueMove,
 } from "../lib/desktop";
 
 const LAST_DOWNLOAD_DIRECTORY_KEY = "torque:last-download-directory-id";
@@ -47,6 +49,53 @@ function rememberDirectoryId(id: string): void {
   }
 }
 
+function sameTorrentStatus(left: TorrentStatus, right: TorrentStatus): boolean {
+  return left.id === right.id
+    && left.infoHash === right.infoHash
+    && left.name === right.name
+    && left.totalPieces === right.totalPieces
+    && left.outputDirectory === right.outputDirectory
+    && left.state === right.state
+    && left.error === right.error
+    && left.progressPercent === right.progressPercent
+    && left.downloadedBytes === right.downloadedBytes
+    && left.totalBytes === right.totalBytes
+    && left.uploadedBytes === right.uploadedBytes
+    && left.downloadSpeedBytesPerSecond === right.downloadSpeedBytesPerSecond
+    && left.uploadSpeedBytesPerSecond === right.uploadSpeedBytesPerSecond
+    && left.connectedPeers === right.connectedPeers
+    && left.addedAt === right.addedAt
+    && left.completedAt === right.completedAt
+    && left.engineAvailable === right.engineAvailable
+    && left.fileSelectionEditable === right.fileSelectionEditable
+    && left.queuePosition === right.queuePosition
+    && left.files.length === right.files.length
+    && left.files.every((file, index) => {
+      const other = right.files[index];
+      return file.index === other.index
+        && file.path === other.path
+        && file.name === other.name
+        && file.sizeBytes === other.sizeBytes
+        && file.downloadedBytes === other.downloadedBytes
+        && file.progressPercent === other.progressPercent
+        && file.included === other.included
+        && file.state === other.state;
+    });
+}
+
+function reuseTorrentSnapshots(previous: TorrentStatus[], next: TorrentStatus[]): TorrentStatus[] {
+  const previousById = new Map(previous.map((torrent) => [torrent.id, torrent]));
+  let changed = previous.length !== next.length;
+  const merged = next.map((torrent, index) => {
+    if (previous[index]?.id !== torrent.id) changed = true;
+    const old = previousById.get(torrent.id);
+    if (old && sameTorrentStatus(old, torrent)) return old;
+    changed = true;
+    return torrent;
+  });
+  return changed ? merged : previous;
+}
+
 export function useTorrentQueue(enabled: boolean) {
   const [torrents, setTorrents] = useState<TorrentStatus[]>([]);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -60,6 +109,13 @@ export function useTorrentQueue(enabled: boolean) {
   const [preferences, setPreferences] = useState<AppPreferences>({
     resumeUnfinishedOnStartup: true,
     startDownloadsAutomatically: true,
+    askForDestinationEveryTime: false,
+    maximumSimultaneousDownloads: 3,
+    downloadLimitBytesPerSecond: null,
+    uploadLimitBytesPerSecond: null,
+    minimizeToTray: false,
+    confirmBeforeRemovingTorrent: true,
+    confirmBeforeDeletingFiles: true,
     theme: "dark",
   });
   const [preferencesLoaded, setPreferencesLoaded] = useState(false);
@@ -74,7 +130,8 @@ export function useTorrentQueue(enabled: boolean) {
 
   const refreshTorrents = useCallback(async () => {
     try {
-      setTorrents(await getTorrents());
+      const next = await getTorrents();
+      setTorrents((current) => reuseTorrentSnapshots(current, next));
       setError("");
     } catch (cause) {
       setError(describeError(cause));
@@ -125,20 +182,22 @@ export function useTorrentQueue(enabled: boolean) {
     };
   }, [enabled, refreshTorrents]);
 
-  const chooseDirectory = useCallback(async () => {
-    if (selectingDirectory) return;
+  const chooseDirectory = useCallback(async (): Promise<boolean> => {
+    if (selectingDirectory) return false;
     setError("");
     setSelectingDirectory(true);
     try {
       const directory = await selectDownloadDirectory();
-      if (!directory) return;
+      if (!directory) return false;
       setDirectories((current) => [
         ...current.filter((item) => item.id !== directory.id),
         directory,
       ]);
       setSelectedDirectoryId(directory.id);
+      return true;
     } catch (cause) {
       setError(describeError(cause));
+      return false;
     } finally {
       setSelectingDirectory(false);
     }
@@ -150,6 +209,7 @@ export function useTorrentQueue(enabled: boolean) {
     try {
       const saved = await setAppPreferences({ ...preferences, ...changes });
       setPreferences(saved);
+      await refreshTorrents();
       try {
         await setWindowTheme(saved.theme);
       } catch (cause) {
@@ -160,7 +220,7 @@ export function useTorrentQueue(enabled: boolean) {
     } finally {
       setSavingPreference(false);
     }
-  }, [preferences]);
+  }, [preferences, refreshTorrents]);
 
   const chooseTorrentFile = useCallback(async (): Promise<TorrentFileSelection | null> => {
     setError("");
@@ -221,10 +281,7 @@ export function useTorrentQueue(enabled: boolean) {
       try {
         const added = await operation();
         if (added) {
-          setTorrents((current) => [
-            added,
-            ...current.filter((torrent) => torrent.id !== added.id),
-          ]);
+          setTorrents((current) => reuseTorrentSnapshots(current, [added, ...current.filter((torrent) => torrent.id !== added.id)]));
           setToast({ id: Date.now(), message: "Torrent added to your downloads." });
         }
         await refreshTorrents();
@@ -252,19 +309,22 @@ export function useTorrentQueue(enabled: boolean) {
       try {
         const updated = await operation();
         if (updated && "state" in updated) {
-          setTorrents((current) => current.map((torrent) =>
+          setTorrents((current) => reuseTorrentSnapshots(current, current.map((torrent) =>
             torrent.id === torrentId ? updated : torrent,
-          ));
+          )));
         }
         if (action === "remove") {
           setTorrents((current) => current.filter((torrent) => torrent.id !== torrentId));
+          await refreshTorrents();
+        } else if (action === "move-queue") {
           await refreshTorrents();
         }
         const successMessages: Partial<Record<TorrentControlAction, string>> = {
           pause: "Download paused.",
           resume: "Download resumed.",
           retry: "Retry started.",
-          remove: "Removed from Torque. Downloaded files were kept.",
+    remove: "Torrent removed from Torque.",
+    "move-queue": "Queue order updated.",
           "update-files": "File selection updated.",
         };
         if (successMessages[action]) {
@@ -313,20 +373,22 @@ export function useTorrentQueue(enabled: boolean) {
     chooseDirectory,
     chooseTorrentFile,
     discardTorrentFile,
-    pauseTorrent: (torrentId: number) =>
-      runTorrentAction(torrentId, "pause", () => pauseDesktopTorrent(torrentId)),
-    resumeTorrent: (torrentId: number) =>
-      runTorrentAction(torrentId, "resume", () => resumeDesktopTorrent(torrentId)),
-    retryTorrent: (torrentId: number) =>
-      runTorrentAction(torrentId, "retry", () => retryDesktopTorrent(torrentId)),
-    removeTorrent: (torrentId: number) =>
-      runTorrentAction(torrentId, "remove", () => removeDesktopTorrent(torrentId)),
-    openTorrentFolder: (torrentId: number) =>
-      runTorrentAction(torrentId, "open-folder", () => openDesktopTorrentFolder(torrentId)),
-    updateTorrentFileSelection: (torrentId: number, selectedFileIndices: number[]) =>
+    pauseTorrent: useCallback((torrentId: number) =>
+      runTorrentAction(torrentId, "pause", () => pauseDesktopTorrent(torrentId)), [runTorrentAction]),
+    resumeTorrent: useCallback((torrentId: number) =>
+      runTorrentAction(torrentId, "resume", () => resumeDesktopTorrent(torrentId)), [runTorrentAction]),
+    retryTorrent: useCallback((torrentId: number) =>
+      runTorrentAction(torrentId, "retry", () => retryDesktopTorrent(torrentId)), [runTorrentAction]),
+    removeTorrent: useCallback((torrentId: number, deleteFiles = false) =>
+      runTorrentAction(torrentId, "remove", () => removeDesktopTorrent(torrentId, deleteFiles)), [runTorrentAction]),
+    openTorrentFolder: useCallback((torrentId: number) =>
+      runTorrentAction(torrentId, "open-folder", () => openDesktopTorrentFolder(torrentId)), [runTorrentAction]),
+    moveTorrent: useCallback((torrentId: number, movement: QueueMove) =>
+      runTorrentAction(torrentId, "move-queue", () => moveDesktopQueuedTorrent(torrentId, movement)), [runTorrentAction]),
+    updateTorrentFileSelection: useCallback((torrentId: number, selectedFileIndices: number[]) =>
       runTorrentAction(torrentId, "update-files", () =>
         updateDesktopTorrentFileSelection(torrentId, selectedFileIndices),
-      ),
+      ), [runTorrentAction]),
     inspectMagnet: (link: string) =>
       inspect(() => inspectDesktopMagnet(link, selectedDirectoryId)),
     inspectTorrentUrl: (url: string) =>

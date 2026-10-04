@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Settings2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Activity, Plus, Settings2, Users, Upload, Download } from "lucide-react";
 import { Sidebar, type AppView } from "../components/Sidebar";
 import { BackendStatus } from "../components/BackendStatus";
 import { ToastRegion } from "../components/ToastRegion";
@@ -8,10 +8,11 @@ import { AddTorrentDialog } from "../features/transfers/AddTorrentDialog";
 import { EmptyFilter } from "../features/transfers/EmptyFilter";
 import { EmptyQueue } from "../features/transfers/EmptyQueue";
 import { SettingsDialog } from "../features/transfers/SettingsDialog";
+import { RemoveTorrentDialog } from "../features/transfers/RemoveTorrentDialog";
 import { TorrentFilters } from "../features/transfers/TorrentFilters";
 import { TorrentDetailsDialog } from "../features/transfers/TorrentDetailsDialog";
 import { TorrentList } from "../features/transfers/TorrentList";
-import { filterTorrents, type TorrentFilter } from "../features/transfers/torrentPresentation";
+import { filterTorrents, formatSpeed, type TorrentFilter } from "../features/transfers/torrentPresentation";
 import type { TorrentDownloadSource } from "../lib/discovery";
 import { useDesktopConnection } from "./useDesktopConnection";
 import { useTorrentQueue } from "./useTorrentQueue";
@@ -20,9 +21,14 @@ export default function App() {
   const { connection, retry } = useDesktopConnection();
   const isConnected = connection.state === "connected";
   const queue = useTorrentQueue(isConnected);
+  const { pauseTorrent, resumeTorrent, setError } = queue;
   const [showAddTorrent, setShowAddTorrent] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [detailsTorrentId, setDetailsTorrentId] = useState<number | null>(null);
+  const [selectedTorrentId, setSelectedTorrentId] = useState<number | null>(null);
+  const [removal, setRemoval] = useState<{ torrentId: number; deleteFiles: boolean } | null>(null);
+  const [fileChooserRequest, setFileChooserRequest] = useState(0);
+  const [searchFocusRequest, setSearchFocusRequest] = useState(0);
   const [currentView, setCurrentView] = useState<AppView>("downloads");
   const viewBeforeSettings = useRef<AppView>("downloads");
   const [discoverySource, setDiscoverySource] = useState<TorrentDownloadSource | null>(null);
@@ -31,9 +37,8 @@ export default function App() {
     () => filterTorrents(queue.torrents, filter),
     [queue.torrents, filter],
   );
-  const activeCount = queue.torrents.filter((torrent) =>
-    torrent.state === "queued" || torrent.state === "downloading",
-  ).length;
+  const activeCount = queue.torrents.filter((torrent) => torrent.state === "downloading").length;
+  const queuedCount = queue.torrents.filter((torrent) => torrent.state === "queued").length;
   const completedCount = queue.torrents.filter((torrent) =>
     torrent.state === "completed" || torrent.progressPercent >= 100,
   ).length;
@@ -44,6 +49,38 @@ export default function App() {
   const detailsTorrent = detailsTorrentId === null
     ? null
     : queue.torrents.find((torrent) => torrent.id === detailsTorrentId) ?? null;
+  const selectedTorrent = selectedTorrentId === null
+    ? null
+    : queue.torrents.find((torrent) => torrent.id === selectedTorrentId) ?? null;
+  const selectedTorrentRef = useRef(selectedTorrent);
+  useEffect(() => { selectedTorrentRef.current = selectedTorrent; }, [selectedTorrent]);
+  const transferSummary = useMemo(() => ({
+    downloadSpeed: queue.torrents.reduce((total, torrent) => total + torrent.downloadSpeedBytesPerSecond, 0),
+    uploadSpeed: queue.torrents.reduce((total, torrent) => total + (torrent.uploadSpeedBytesPerSecond ?? 0), 0),
+    peers: queue.torrents.reduce((total, torrent) => total + (torrent.connectedPeers ?? 0), 0),
+  }), [queue.torrents]);
+  const shortcutModifier = connection.state === "connected" && connection.info.platform === "macos" ? "⌘" : "Ctrl";
+
+  const openAddDialog = useCallback(() => {
+    setDiscoverySource(null);
+    setShowAddTorrent(true);
+  }, []);
+
+  const openTorrentDetails = useCallback((torrentId: number) => {
+    setSelectedTorrentId(torrentId);
+    setDetailsTorrentId(torrentId);
+  }, []);
+
+  const requestRemoval = useCallback((torrentId: number, deleteFiles = false): Promise<boolean> => {
+    const needsConfirmation = deleteFiles
+      ? queue.preferences.confirmBeforeDeletingFiles
+      : queue.preferences.confirmBeforeRemovingTorrent;
+    if (needsConfirmation) {
+      setRemoval({ torrentId, deleteFiles });
+      return Promise.resolve(true);
+    }
+    return queue.removeTorrent(torrentId, deleteFiles);
+  }, [queue.preferences.confirmBeforeDeletingFiles, queue.preferences.confirmBeforeRemovingTorrent, queue.removeTorrent]);
 
   useEffect(() => {
     if (detailsTorrentId !== null && !detailsTorrent) setDetailsTorrentId(null);
@@ -76,6 +113,73 @@ export default function App() {
     return () => systemTheme.removeEventListener("change", apply);
   }, [queue.preferences.theme]);
 
+  useEffect(() => {
+    function isEditable(target: EventTarget | null) {
+      if (!(target instanceof HTMLElement)) return false;
+      return target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)
+        || target.getAttribute("role") === "textbox";
+    }
+
+    async function onKeyDown(event: KeyboardEvent) {
+      const modifier = event.metaKey || event.ctrlKey;
+      const editable = isEditable(event.target);
+      const onControl = event.target instanceof HTMLElement
+        && Boolean(event.target.closest("button, a, [role='menuitem'], [role='menu']"));
+      const key = event.key.toLowerCase();
+
+      if (modifier && key === "o") {
+        event.preventDefault();
+        setCurrentView("downloads");
+        setShowSettings(false);
+        setDiscoverySource(null);
+        setShowAddTorrent(true);
+        setFileChooserRequest((request) => request + 1);
+        return;
+      }
+      if (modifier && key === "f" && !editable) {
+        event.preventDefault();
+        setShowAddTorrent(false);
+        setShowSettings(false);
+        setCurrentView("browse");
+        setSearchFocusRequest((request) => request + 1);
+        return;
+      }
+      if (modifier && key === "v" && !editable) {
+        event.preventDefault();
+        try {
+          const text = await navigator.clipboard.readText();
+          if (/^\s*magnet:\?/i.test(text)) {
+            setCurrentView("downloads");
+            setShowSettings(false);
+            setDiscoverySource({ kind: "magnet", value: text.trim() });
+            setShowAddTorrent(true);
+          }
+        } catch {
+          setError("Clipboard access is unavailable. Paste the magnet link into Add Torrent instead.");
+        }
+        return;
+      }
+
+      const selected = selectedTorrentRef.current;
+      if (modifier || editable || onControl || showAddTorrent || showSettings || detailsTorrentId !== null) return;
+      if (event.key === " " && selected) {
+        if (selected.state === "downloading") {
+          event.preventDefault();
+          void pauseTorrent(selected.id);
+        } else if (selected.state === "paused") {
+          event.preventDefault();
+          void resumeTorrent(selected.id);
+        }
+      } else if (event.key === "Delete" && selected) {
+        event.preventDefault();
+        void requestRemoval(selected.id, false);
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [detailsTorrentId, pauseTorrent, requestRemoval, resumeTorrent, setError, showAddTorrent, showSettings]);
+
   return (
     <div className="app-shell" aria-busy={queue.initialLoading}>
       <Sidebar
@@ -106,10 +210,7 @@ export default function App() {
             <button
               className="primary-button workspace__add"
               type="button"
-              onClick={() => {
-                setDiscoverySource(null);
-                setShowAddTorrent(true);
-              }}
+              onClick={openAddDialog}
               disabled={!isConnected}
             >
               <Plus size={15} strokeWidth={2} aria-hidden="true" />
@@ -135,6 +236,7 @@ export default function App() {
         {currentView === "browse" ? (
           <DiscoveryView
             enabled={isConnected}
+            focusRequest={searchFocusRequest}
             onReviewSource={(source) => {
               setDiscoverySource(source);
               setCurrentView("downloads");
@@ -155,9 +257,12 @@ export default function App() {
                 onPause={queue.pauseTorrent}
                 onResume={queue.resumeTorrent}
                 onRetry={queue.retryTorrent}
-                onRemove={queue.removeTorrent}
+                onRemove={requestRemoval}
                 onOpenFolder={queue.openTorrentFolder}
-                onOpenDetails={setDetailsTorrentId}
+                onOpenDetails={openTorrentDetails}
+                onMove={queue.moveTorrent}
+                selectedTorrentId={selectedTorrentId}
+                onSelectTorrent={setSelectedTorrentId}
               />
             </div>
           ) : (
@@ -172,7 +277,7 @@ export default function App() {
           </section>
         ) : queue.torrents.length === 0 ? (
           <EmptyQueue
-            onAdd={() => setShowAddTorrent(true)}
+            onAdd={openAddDialog}
             disabled={!isConnected || !queue.selectedDirectoryId}
           />
         ) : (
@@ -191,19 +296,33 @@ export default function App() {
                   onPause={queue.pauseTorrent}
                   onResume={queue.resumeTorrent}
                   onRetry={queue.retryTorrent}
-                  onRemove={queue.removeTorrent}
+                  onRemove={requestRemoval}
                   onOpenFolder={queue.openTorrentFolder}
-                  onOpenDetails={setDetailsTorrentId}
+                  onOpenDetails={openTorrentDetails}
+                  onMove={queue.moveTorrent}
+                  selectedTorrentId={selectedTorrentId}
+                  onSelectTorrent={setSelectedTorrentId}
                 />
               )
               : <EmptyFilter filter={filter} />}
           </div>
         )}
+
+        <footer className="global-status-bar" aria-label="Transfer status">
+          <span><Download size={13} aria-hidden="true" /><strong>{formatSpeed(transferSummary.downloadSpeed)}</strong></span>
+          <span><Upload size={13} aria-hidden="true" /><strong>{formatSpeed(transferSummary.uploadSpeed)}</strong></span>
+          <span><Users size={13} aria-hidden="true" /><span>Peers</span><strong>{transferSummary.peers}</strong></span>
+          <span><Activity size={13} aria-hidden="true" /><span>Active</span><strong>{activeCount}</strong></span>
+          <span className="global-status-bar__queue"><span>Queued</span><strong>{queuedCount}</strong></span>
+          <div className="global-status-bar__shortcuts"><kbd>{shortcutModifier}</kbd><kbd>O</kbd><span>Add file</span><kbd>{shortcutModifier}</kbd><kbd>V</kbd><span>Magnet</span><kbd>{shortcutModifier}</kbd><kbd>F</kbd><span>Search</span></div>
+        </footer>
       </main>
 
       {showAddTorrent && (
         <AddTorrentDialog
           initialSource={discoverySource}
+          fileChooserRequest={fileChooserRequest}
+          askForDestinationEveryTime={queue.preferences.askForDestinationEveryTime}
           selectedDirectory={queue.selectedDirectory}
           error={queue.error}
           busy={queue.busy}
@@ -213,6 +332,7 @@ export default function App() {
           onClose={() => {
             setShowAddTorrent(false);
             setDiscoverySource(null);
+            setFileChooserRequest(0);
           }}
           onSelectDirectory={queue.chooseDirectory}
           onChooseTorrentFile={queue.chooseTorrentFile}
@@ -252,6 +372,25 @@ export default function App() {
           onClose={() => {
             setShowSettings(false);
             setCurrentView(viewBeforeSettings.current);
+          }}
+        />
+      )}
+
+      {removal && (
+        <RemoveTorrentDialog
+          torrentName={queue.torrents.find((torrent) => torrent.id === removal.torrentId)?.name ?? "This torrent"}
+          deleteFiles={removal.deleteFiles}
+          busy={queue.torrentActions[removal.torrentId]?.pending === "remove"}
+          error={queue.torrentActions[removal.torrentId]?.error}
+          onClose={() => setRemoval(null)}
+          onConfirm={() => {
+            void queue.removeTorrent(removal.torrentId, removal.deleteFiles).then((removed) => {
+              if (removed) {
+                setRemoval(null);
+                setSelectedTorrentId(null);
+                if (detailsTorrentId === removal.torrentId) setDetailsTorrentId(null);
+              }
+            });
           }}
         />
       )}

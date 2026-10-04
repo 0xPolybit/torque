@@ -4259,3 +4259,358 @@ dialog.torrent-details::backdrop {
 :root[data-color-scheme="light"] .torrent-details__table-wrap {
   border-color: var(--color-border);
 }
+
+.torrent-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 158px;
+}
+
+.torrent-row.is-selected {
+  background: color-mix(in srgb, var(--color-accent) 5%, transparent);
+}
+
+.torrent-row:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
+}
+
+.torrent-row__queue-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--color-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.torrent-row__queue-controls > span {
+  min-width: 20px;
+  margin-right: 2px;
+}
+
+.torrent-row__queue-controls button {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+}
+
+.torrent-row__queue-controls button:hover:not(:disabled) {
+  border-color: var(--color-border);
+  background: var(--color-control-hover);
+  color: var(--color-text);
+}
+
+.torrent-row__queue-controls button:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.torrent-row__queue-controls button:focus-visible,
+.torrent-row__menu-wrap > button:focus-visible,
+.torrent-row__menu button:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.torrent-row__menu-wrap {
+  position: relative;
+}
+
+.torrent-row__menu-wrap > button {
+  width: 30px;
+  min-height: 29px;
+}
+
+.torrent-row__menu {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 5px);
+  right: 0;
+  display: grid;
+  width: 224px;
+  padding: 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-panel);
+}
+
+.torrent-row__menu button {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text);
+  text-align: left;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.torrent-row__menu button:hover {
+  background: var(--color-control-hover);
+}
+
+.torrent-row__menu button > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.torrent-row__menu button span {
+  display: grid;
+  gap: 3px;
+}
+
+.torrent-row__menu button small {
+  color: var(--color-muted);
+  font-size: 10px;
+}
+
+.torrent-row__menu .torrent-row__menu-delete {
+  color: var(--color-danger);
+}
+
+.torrent-row__menu .torrent-row__menu-delete small {
+  color: var(--color-muted);
+}
+
+.global-status-bar {
+  display: flex;
+  min-height: 31px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 17px;
+  padding: 0 2px;
+  border-top: 1px solid var(--color-border-soft);
+  color: var(--color-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.global-status-bar > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.global-status-bar > span > svg {
+  color: var(--color-subtle);
+}
+
+.global-status-bar strong {
+  color: var(--color-text);
+  font-weight: 580;
+}
+
+.global-status-bar__shortcuts {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  color: var(--color-subtle);
+  white-space: nowrap;
+}
+
+.global-status-bar__shortcuts span {
+  margin: 0 6px 0 2px;
+}
+
+.global-status-bar kbd {
+  min-width: 17px;
+  padding: 2px 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-control);
+  color: var(--color-muted);
+  text-align: center;
+  font: inherit;
+  font-size: 9px;
+}
+
+.settings-dialog {
+  width: min(620px, calc(100vw - 36px));
+}
+
+.settings-rate-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 0;
+  border-top: 1px solid var(--color-border-soft);
+}
+
+.settings-rate-control {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+}
+
+.settings-number-input,
+.settings-unit-select {
+  box-sizing: border-box;
+  min-height: 32px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-control);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 10px;
+}
+
+.settings-number-input {
+  width: 88px;
+  padding: 0 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-number-input--compact {
+  width: 66px;
+  flex: 0 0 auto;
+}
+
+.settings-number-input.is-invalid {
+  border-color: var(--color-danger);
+}
+
+.settings-unit-select {
+  padding: 0 7px;
+}
+
+.settings-number-input:focus-visible,
+.settings-unit-select:focus-visible,
+.settings-rate-control .settings-theme-select:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.remove-dialog {
+  width: min(420px, calc(100vw - 36px));
+  max-width: none;
+  padding: 21px;
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: var(--color-panel);
+  color: var(--color-text);
+}
+
+.remove-dialog::backdrop {
+  background: rgb(4 7 5 / 74%);
+}
+
+.remove-dialog__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.remove-dialog__icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid var(--color-state-border);
+  border-radius: 9px;
+  color: var(--color-danger);
+}
+
+.remove-dialog h2 {
+  margin: 16px 0 7px;
+  font-size: 16px;
+  font-weight: 620;
+}
+
+.remove-dialog p {
+  margin: 9px 0 0;
+  color: var(--color-muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.remove-dialog .remove-dialog__name {
+  overflow: hidden;
+  color: var(--color-text);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remove-dialog .remove-dialog__error {
+  color: var(--color-danger);
+}
+
+.remove-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.danger-button {
+  min-height: 36px;
+  padding: 0 13px;
+  border: 1px solid color-mix(in srgb, var(--color-danger) 70%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-danger) 18%, var(--color-panel));
+  color: var(--color-danger);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 620;
+  cursor: pointer;
+}
+
+.danger-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-danger) 25%, var(--color-panel));
+}
+
+.danger-button:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 3px;
+}
+
+.danger-button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+@media (max-width: 1040px) {
+  .global-status-bar {
+    gap: 11px;
+  }
+
+  .global-status-bar__shortcuts {
+    display: none;
+  }
+}
+
+@media (max-width: 840px) {
+  .torrent-row__queue-controls button:nth-of-type(1),
+  .torrent-row__queue-controls button:nth-of-type(4) {
+    display: none;
+  }
+
+  .global-status-bar {
+    justify-content: space-between;
+    gap: 7px;
+    font-size: 9px;
+  }
+}
+
+:root[data-color-scheme="light"] .remove-dialog::backdrop {
+  background: rgb(24 36 27 / 38%);
+}
+
+:root[data-color-scheme="light"] .danger-button {
+  background: #fff5f4;
+}

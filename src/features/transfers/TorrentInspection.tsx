@@ -24,7 +24,7 @@ interface TorrentInspectionProps {
   error: string;
   onBack: () => void;
   onCancelDuplicate: () => void;
-  onSelectDirectory: () => Promise<void>;
+  onSelectDirectory: () => Promise<boolean>;
   onStart: (previewId: string, fileIndices: number[], allowInsufficientSpace: boolean) => Promise<boolean>;
   onViewExistingTorrent: (torrentId: number) => void;
 }

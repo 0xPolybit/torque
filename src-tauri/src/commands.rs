@@ -9,8 +9,8 @@ use crate::discovery::{
     TorrentSearchResponse,
 };
 use crate::torrent::{
-    AppPreferences, DownloadDirectory, TorrentDetails, TorrentFileSelection, TorrentPreview,
-    TorrentService, TorrentStatus,
+    AppPreferences, DownloadDirectory, QueueMove, TorrentDetails, TorrentFileSelection,
+    TorrentPreview, TorrentService, TorrentStatus,
 };
 
 #[derive(Serialize)]
@@ -45,12 +45,13 @@ pub fn get_app_preferences(service: State<'_, TorrentService>) -> Result<AppPref
 }
 
 #[tauri::command]
-pub fn set_app_preferences(
+pub async fn set_app_preferences(
     service: State<'_, TorrentService>,
     preferences: AppPreferences,
 ) -> Result<AppPreferences, String> {
     service
         .set_preferences(preferences)
+        .await
         .map_err(|error| error.to_string())
 }
 
@@ -199,8 +200,13 @@ pub fn discard_torrent_preview(
 }
 
 #[tauri::command]
-pub fn get_torrents(service: State<'_, TorrentService>) -> Result<Vec<TorrentStatus>, String> {
-    service.get_torrents().map_err(|error| error.to_string())
+pub async fn get_torrents(
+    service: State<'_, TorrentService>,
+) -> Result<Vec<TorrentStatus>, String> {
+    service
+        .refresh_torrents()
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -272,9 +278,22 @@ pub async fn retry_torrent(
 pub async fn remove_torrent(
     service: State<'_, TorrentService>,
     torrent_id: usize,
+    delete_files: bool,
 ) -> Result<(), String> {
     service
-        .remove_torrent(torrent_id)
+        .remove_torrent(torrent_id, delete_files)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn move_queued_torrent(
+    service: State<'_, TorrentService>,
+    torrent_id: usize,
+    movement: QueueMove,
+) -> Result<TorrentStatus, String> {
+    service
+        .move_queued_torrent(torrent_id, movement)
         .await
         .map_err(|error| error.to_string())
 }

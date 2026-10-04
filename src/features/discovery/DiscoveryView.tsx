@@ -19,6 +19,7 @@ import { useTorrentSearch } from "./useTorrentSearch";
 interface DiscoveryViewProps {
   enabled: boolean;
   onReviewSource: (source: TorrentDownloadSource) => void;
+  focusRequest?: number;
 }
 
 function sortResults(results: TorrentSearchResult[], sort: BrowseSort): TorrentSearchResult[] {
@@ -49,7 +50,7 @@ function resultKey(result: TorrentSearchResult): string {
   return `${result.provider}:${result.id}`;
 }
 
-export function DiscoveryView({ enabled, onReviewSource }: DiscoveryViewProps) {
+export function DiscoveryView({ enabled, onReviewSource, focusRequest = 0 }: DiscoveryViewProps) {
   const search = useTorrentSearch(enabled);
   const recent = useRecentSearches();
   const [query, setQuery] = useState("");
@@ -64,6 +65,11 @@ export function DiscoveryView({ enabled, onReviewSource }: DiscoveryViewProps) {
   const [detailsRevision, setDetailsRevision] = useState(0);
   const [inspecting, setInspecting] = useState(false);
   const detailsRequest = useRef(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (focusRequest > 0) searchInputRef.current?.focus();
+  }, [focusRequest]);
 
   useEffect(() => {
     if (!selectedResult) {
@@ -149,6 +155,7 @@ export function DiscoveryView({ enabled, onReviewSource }: DiscoveryViewProps) {
   return (
     <section className="browse-view" aria-label="Browse authorized open content">
       <BrowseSearchBar
+        inputRef={searchInputRef}
         query={query}
         category={category}
         providerId={providerId}

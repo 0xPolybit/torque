@@ -1,4 +1,4 @@
-import type { TorrentActionState, TorrentStatus } from "../../lib/desktop";
+import type { QueueMove, TorrentActionState, TorrentStatus } from "../../lib/desktop";
 import { TorrentRow } from "./TorrentRow";
 
 interface TorrentListProps {
@@ -7,9 +7,12 @@ interface TorrentListProps {
   onPause: (torrentId: number) => Promise<boolean>;
   onResume: (torrentId: number) => Promise<boolean>;
   onRetry: (torrentId: number) => Promise<boolean>;
-  onRemove: (torrentId: number) => Promise<boolean>;
+  onRemove: (torrentId: number, deleteFiles?: boolean) => Promise<boolean>;
   onOpenFolder: (torrentId: number) => Promise<boolean>;
   onOpenDetails: (torrentId: number) => void;
+  onMove: (torrentId: number, movement: QueueMove) => Promise<boolean>;
+  selectedTorrentId: number | null;
+  onSelectTorrent: (torrentId: number) => void;
 }
 
 export function TorrentList({
@@ -21,6 +24,9 @@ export function TorrentList({
   onRemove,
   onOpenFolder,
   onOpenDetails,
+  onMove,
+  selectedTorrentId,
+  onSelectTorrent,
 }: TorrentListProps) {
   return (
     <section className="queue-panel queue-panel--populated" aria-label="Torrent transfers">
@@ -37,6 +43,9 @@ export function TorrentList({
             onRemove={onRemove}
             onOpenFolder={onOpenFolder}
             onOpenDetails={onOpenDetails}
+            onMove={onMove}
+            selected={selectedTorrentId === torrent.id}
+            onSelect={onSelectTorrent}
           />
         ))}
       </div>

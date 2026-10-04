@@ -9,13 +9,14 @@ type InputKind = "magnet" | "url" | "file";
 
 interface AddTorrentDialogProps {
   selectedDirectory?: DownloadDirectory;
+  askForDestinationEveryTime: boolean;
   error: string;
   busy: boolean;
   inspectingMetadata: boolean;
   selectingDirectory: boolean;
   selectingFile: boolean;
   onClose: () => void;
-  onSelectDirectory: () => Promise<void>;
+  onSelectDirectory: () => Promise<boolean>;
   onChooseTorrentFile: () => Promise<TorrentFileSelection | null>;
   onDiscardTorrentFile: (id: string) => Promise<void>;
   onInspectMagnet: (link: string) => Promise<TorrentPreview | null>;
@@ -25,10 +26,12 @@ interface AddTorrentDialogProps {
   onStartPreview: (previewId: string, fileIndices: number[], allowInsufficientSpace?: boolean) => Promise<boolean>;
   onViewExistingTorrent: (torrentId: number) => void;
   initialSource?: TorrentDownloadSource | null;
+  fileChooserRequest?: number;
 }
 
 export function AddTorrentDialog({
   selectedDirectory,
+  askForDestinationEveryTime,
   error,
   busy,
   inspectingMetadata,
@@ -45,6 +48,7 @@ export function AddTorrentDialog({
   onStartPreview,
   onViewExistingTorrent,
   initialSource,
+  fileChooserRequest = 0,
 }: AddTorrentDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [kind, setKind] = useState<InputKind>(() => initialSource?.kind === "torrentUrl" ? "url" : "magnet");
@@ -54,6 +58,9 @@ export function AddTorrentDialog({
   const [preview, setPreview] = useState<TorrentPreview | null>(null);
   const [validationError, setValidationError] = useState("");
   const [directoryError, setDirectoryError] = useState("");
+  const [destinationConfirmed, setDestinationConfirmed] = useState(!askForDestinationEveryTime);
+  const destinationPrompted = useRef(false);
+  const handledFileChooserRequest = useRef(0);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -98,10 +105,36 @@ export function AddTorrentDialog({
     setFileSelection(next);
   }
 
+  useEffect(() => {
+    let active = true;
+    const chooseFileNow = fileChooserRequest > 0
+      && handledFileChooserRequest.current !== fileChooserRequest;
+    if (chooseFileNow) {
+      handledFileChooserRequest.current = fileChooserRequest;
+      setKind("file");
+      setValidationError("");
+    }
+    if (!askForDestinationEveryTime && !chooseFileNow) return;
+
+    void (async () => {
+      if (askForDestinationEveryTime && !destinationPrompted.current) {
+        destinationPrompted.current = true;
+        setDestinationConfirmed(false);
+        const selected = await onSelectDirectory();
+        if (!active) return;
+        setDestinationConfirmed(selected);
+        if (!selected) return;
+      }
+      if (chooseFileNow) await chooseFile();
+    })();
+
+    return () => { active = false; };
+  }, [askForDestinationEveryTime, fileChooserRequest]);
+
   async function inspect() {
     setValidationError("");
     setDirectoryError("");
-    if (!selectedDirectory?.id) {
+    if (!selectedDirectory?.id || (askForDestinationEveryTime && !destinationConfirmed)) {
       setDirectoryError("Choose a destination folder before inspecting this torrent.");
       return;
     }
@@ -270,7 +303,12 @@ export function AddTorrentDialog({
                   {selectedDirectory?.displayPath ?? "Choose a destination folder"}
                 </span>
               </div>
-              <button className="text-button" type="button" disabled={locked} onClick={() => { setDirectoryError(""); void onSelectDirectory(); }}>
+              <button className="text-button" type="button" disabled={locked} onClick={() => {
+                setDirectoryError("");
+                void onSelectDirectory().then((selected) => {
+                  if (selected) setDestinationConfirmed(true);
+                });
+              }}>
                 {selectingDirectory ? "Choosing…" : "Change folder"}
               </button>
             </div>
