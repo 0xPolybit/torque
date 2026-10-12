@@ -10,6 +10,7 @@ interface TorrentFiltersProps {
 const FILTERS: { id: TorrentFilter; label: string }[] = [
   { id: "all", label: "All" },
   { id: "downloading", label: "Downloading" },
+  { id: "checking", label: "Checking" },
   { id: "queued", label: "Queued" },
   { id: "completed", label: "Completed" },
   { id: "paused", label: "Paused" },

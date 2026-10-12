@@ -100,6 +100,8 @@ pub fn run() {
             commands::pause_torrent,
             commands::resume_torrent,
             commands::retry_torrent,
+            commands::force_recheck,
+            commands::cancel_torrent_recheck,
             commands::remove_torrent,
             commands::move_queued_torrent,
             commands::open_torrent_folder,

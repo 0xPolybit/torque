@@ -40,7 +40,7 @@ export default function App() {
   const activeCount = queue.torrents.filter((torrent) => torrent.state === "downloading").length;
   const queuedCount = queue.torrents.filter((torrent) => torrent.state === "queued").length;
   const completedCount = queue.torrents.filter((torrent) =>
-    torrent.state === "completed" || torrent.progressPercent >= 100,
+    torrent.state === "completed" || (torrent.state !== "checking" && torrent.progressPercent >= 100),
   ).length;
   const historyTorrents = useMemo(
     () => filterTorrents(queue.torrents, "completed"),
@@ -257,6 +257,8 @@ export default function App() {
                 onPause={queue.pauseTorrent}
                 onResume={queue.resumeTorrent}
                 onRetry={queue.retryTorrent}
+                onForceRecheck={queue.forceRecheck}
+                onCancelRecheck={queue.cancelTorrentRecheck}
                 onRemove={requestRemoval}
                 onOpenFolder={queue.openTorrentFolder}
                 onOpenDetails={openTorrentDetails}
@@ -296,6 +298,8 @@ export default function App() {
                   onPause={queue.pauseTorrent}
                   onResume={queue.resumeTorrent}
                   onRetry={queue.retryTorrent}
+                  onForceRecheck={queue.forceRecheck}
+                  onCancelRecheck={queue.cancelTorrentRecheck}
                   onRemove={requestRemoval}
                   onOpenFolder={queue.openTorrentFolder}
                   onOpenDetails={openTorrentDetails}

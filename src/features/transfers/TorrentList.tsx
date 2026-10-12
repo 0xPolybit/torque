@@ -7,6 +7,8 @@ interface TorrentListProps {
   onPause: (torrentId: number) => Promise<boolean>;
   onResume: (torrentId: number) => Promise<boolean>;
   onRetry: (torrentId: number) => Promise<boolean>;
+  onForceRecheck: (torrentId: number) => Promise<boolean>;
+  onCancelRecheck: (torrentId: number) => Promise<boolean>;
   onRemove: (torrentId: number, deleteFiles?: boolean) => Promise<boolean>;
   onOpenFolder: (torrentId: number) => Promise<boolean>;
   onOpenDetails: (torrentId: number) => void;
@@ -21,6 +23,8 @@ export function TorrentList({
   onPause,
   onResume,
   onRetry,
+  onForceRecheck,
+  onCancelRecheck,
   onRemove,
   onOpenFolder,
   onOpenDetails,
@@ -40,6 +44,8 @@ export function TorrentList({
             onPause={onPause}
             onResume={onResume}
             onRetry={onRetry}
+            onForceRecheck={onForceRecheck}
+            onCancelRecheck={onCancelRecheck}
             onRemove={onRemove}
             onOpenFolder={onOpenFolder}
             onOpenDetails={onOpenDetails}

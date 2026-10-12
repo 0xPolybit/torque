@@ -84,6 +84,12 @@ pub enum TorrentError {
     Persistence(String),
     #[error("The application state could not be locked.")]
     ApplicationStateLock,
+    #[error("Integrity verification is already running for this torrent.")]
+    RecheckAlreadyRunning,
+    #[error("Could not prepare the torrent for integrity verification: {0}")]
+    Recheck(String),
+    #[error("Integrity verification was not started because {0} is larger than its expected torrent file size. The file was left unchanged; move or rename it and try again.")]
+    RecheckWouldTruncate(String),
     #[error("The queue state could not be locked.")]
     QueueLock,
     #[error("Maximum simultaneous downloads must be between 1 and 64.")]
@@ -177,6 +183,7 @@ struct PreviewMetadata {
 pub enum TorrentState {
     Queued,
     Downloading,
+    Checking,
     Paused,
     Completed,
     Error,
@@ -243,6 +250,7 @@ pub struct TorrentFile {
 #[serde(rename_all = "snake_case")]
 pub enum TorrentFileState {
     Skipped,
+    Checking,
     Queued,
     Downloading,
     Paused,
@@ -291,6 +299,7 @@ pub struct TorrentService {
     torrent_previews: Mutex<HashMap<String, PreparedTorrentPreview>>,
     default_directory_id: String,
     persistence: ApplicationPersistence,
+    recheck_directory: Option<PathBuf>,
     missing_torrent_ids: Mutex<HashMap<usize, String>>,
     queue: Mutex<QueueState>,
     queue_operations: AsyncMutex<()>,
@@ -327,10 +336,16 @@ impl TorrentService {
         let session = Session::new_with_opts(default_output_directory.clone(), options)
             .await
             .map_err(|error| TorrentError::Engine(error.to_string()))?;
-        let service = Self::with_persistence(session, default_output_directory, persistence)?;
+        let service = Self::with_persistence(
+            session,
+            default_output_directory,
+            persistence,
+            Some(persistence_directory.clone()),
+        )?;
         service
             .restore_missing_torrents(&persistence_directory)
             .await?;
+        service.resume_interrupted_rechecks().await?;
         service.apply_startup_resume_preference().await;
         service.get_torrents()?;
         Ok(service)
@@ -345,6 +360,7 @@ impl TorrentService {
             session,
             default_output_directory,
             ApplicationPersistence::in_memory(),
+            None,
         )
     }
 
@@ -352,6 +368,7 @@ impl TorrentService {
         session: Arc<Session>,
         default_output_directory: PathBuf,
         persistence: ApplicationPersistence,
+        recheck_directory: Option<PathBuf>,
     ) -> Result<Self, TorrentError> {
         let api = Api::new(Arc::clone(&session), None);
         let (queue_order, queued_info_hashes) = persistence
@@ -365,6 +382,7 @@ impl TorrentService {
             torrent_previews: Mutex::new(HashMap::new()),
             default_directory_id: Uuid::new_v4().to_string(),
             persistence,
+            recheck_directory,
             missing_torrent_ids: Mutex::new(HashMap::new()),
             queue: Mutex::new(QueueState {
                 order: queue_order,
@@ -620,6 +638,9 @@ impl TorrentService {
             if matches!(torrent.state, TorrentState::Error | TorrentState::Completed) {
                 continue;
             }
+            if torrent.state == TorrentState::Checking {
+                continue;
+            }
             self.api
                 .api_torrent_action_start(TorrentIdOrHash::Id(torrent.id))
                 .await
@@ -636,6 +657,7 @@ impl TorrentService {
 
     pub async fn refresh_torrents(&self) -> Result<Vec<TorrentStatus>, TorrentError> {
         let _guard = self.queue_operations.lock().await;
+        self.finalize_completed_rechecks_locked().await?;
         self.schedule_queue_locked().await?;
         self.get_torrents()
     }
@@ -1052,6 +1074,196 @@ impl TorrentService {
         Ok(status)
     }
 
+    pub async fn force_recheck(&self, id: usize) -> Result<TorrentStatus, TorrentError> {
+        let _guard = self.queue_operations.lock().await;
+        let status = self.get_torrent_status(id)?;
+        if status.state == TorrentState::Checking
+            || self
+                .persistence
+                .recheck_state(&status.info_hash)
+                .map_err(TorrentError::Persistence)?
+                .is_some_and(|(checking, _)| checking)
+        {
+            return Err(TorrentError::RecheckAlreadyRunning);
+        }
+        let handle = self
+            .session
+            .get(TorrentIdOrHash::Id(id))
+            .ok_or_else(|| TorrentError::Recheck("The torrent session is unavailable.".into()))?;
+        let (metainfo, output_path, only_files, trackers, files) = handle
+            .with_metadata(|metadata| {
+                (
+                    metadata.torrent_bytes.clone(),
+                    handle.output_folder().to_path_buf(),
+                    handle.only_files(),
+                    handle
+                        .shared()
+                        .trackers
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>(),
+                    metadata
+                        .file_infos
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, file)| {
+                            !file.attrs.padding
+                                && handle
+                                    .only_files()
+                                    .as_ref()
+                                    .is_none_or(|selected| selected.contains(index))
+                        })
+                        .map(|(_, file)| (file.relative_filename.clone(), file.len))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .map_err(|error| TorrentError::Recheck(error.to_string()))?;
+        validate_recheck_files(&output_path, &files)?;
+        let info_hash = status.info_hash.to_ascii_lowercase();
+        let recovery_path = self.recheck_metainfo_path(&info_hash)?;
+
+        // Keep only temporary metainfo, never a copy of the downloaded payload.
+        fs::write(&recovery_path, &metainfo)
+            .map_err(|error| TorrentError::Recheck(error.to_string()))?;
+        let resume_after = match status.state {
+            TorrentState::Downloading | TorrentState::Queued | TorrentState::Completed => true,
+            TorrentState::Error => self.preferences()?.start_downloads_automatically,
+            TorrentState::Checking => false,
+            TorrentState::Paused => false,
+        };
+        self.persistence
+            .begin_recheck(&info_hash, resume_after, trackers.clone())
+            .map_err(TorrentError::Persistence)?;
+
+        if let Err(error) = self
+            .reset_recheck_engine_entry(
+                id,
+                &info_hash,
+                metainfo,
+                &output_path,
+                only_files,
+                trackers,
+            )
+            .await
+        {
+            // Keep the recovery metainfo and persisted intent if the engine
+            // entry was removed; startup can safely reconstruct it.
+            if self.session.get(TorrentIdOrHash::Id(id)).is_some() {
+                let _ = self.persistence.finish_recheck(&info_hash);
+                let _ = fs::remove_file(&recovery_path);
+            }
+            return Err(error);
+        }
+
+        self.schedule_queue_locked().await?;
+        let mut checking = self.get_torrent_status(id)?;
+        self.decorate_torrent(&mut checking)?;
+        Ok(checking)
+    }
+
+    pub async fn cancel_torrent_recheck(&self, id: usize) -> Result<TorrentStatus, TorrentError> {
+        let _guard = self.queue_operations.lock().await;
+        let status = self.get_torrent_status(id)?;
+        let is_rechecking = self
+            .persistence
+            .recheck_state(&status.info_hash)
+            .map_err(TorrentError::Persistence)?
+            .is_some_and(|(checking, _)| checking);
+        if !is_rechecking {
+            return Err(TorrentError::Recheck(
+                "This torrent is not currently being checked.".into(),
+            ));
+        }
+        if status.state == TorrentState::Checking {
+            self.api
+                .api_torrent_action_pause(TorrentIdOrHash::Id(id))
+                .await
+                .map_err(|error| TorrentError::Engine(error.to_string()))?;
+        } else {
+            // The scan can finish between the UI poll and this action. In that
+            // case reconcile its result rather than failing on an already
+            // paused rqbit handle.
+            self.finalize_completed_rechecks_locked().await?;
+            return self.get_torrent_status(id);
+        }
+        let info_hash = status.info_hash.to_ascii_lowercase();
+        self.persistence
+            .finish_recheck(&info_hash)
+            .map_err(TorrentError::Persistence)?;
+        self.remove_recheck_metainfo(&info_hash);
+        {
+            let mut queue = self.queue.lock().map_err(|_| TorrentError::QueueLock)?;
+            queue.waiting.retain(|entry| entry != &info_hash);
+            self.persist_queue_locked(&queue)?;
+        }
+        self.schedule_queue_locked().await?;
+        self.get_torrent_status(id)
+    }
+
+    fn recheck_metainfo_path(&self, info_hash: &str) -> Result<PathBuf, TorrentError> {
+        let directory = self
+            .recheck_directory
+            .as_ref()
+            .ok_or_else(|| TorrentError::Recheck("Recovery storage is unavailable.".into()))?;
+        if !is_valid_info_hash(info_hash) {
+            return Err(TorrentError::Recheck(
+                "The torrent info hash is invalid.".into(),
+            ));
+        }
+        Ok(directory.join(format!("{info_hash}.recheck.torrent")))
+    }
+
+    fn remove_recheck_metainfo(&self, info_hash: &str) {
+        if let Ok(path) = self.recheck_metainfo_path(info_hash) {
+            if let Err(error) = fs::remove_file(path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!("Could not remove temporary recheck metadata: {error}");
+                }
+            }
+        }
+    }
+
+    async fn reset_recheck_engine_entry(
+        &self,
+        id: usize,
+        info_hash: &str,
+        metainfo: Bytes,
+        output_path: &Path,
+        only_files: Option<Vec<usize>>,
+        trackers: Vec<String>,
+    ) -> Result<(), TorrentError> {
+        self.session
+            .delete(TorrentIdOrHash::Id(id), false)
+            .await
+            .map_err(|error| TorrentError::Recheck(error.to_string()))?;
+        let response = self
+            .api
+            .api_add_torrent(
+                AddTorrent::from_bytes(metainfo),
+                Some(AddTorrentOptions {
+                    output_folder: Some(output_path.to_string_lossy().into_owned()),
+                    paused: true,
+                    only_files,
+                    // Rechecking and session restoration must open existing
+                    // payload files so librqbit can hash their current contents.
+                    overwrite: true,
+                    preferred_id: Some(id),
+                    trackers: Some(trackers),
+                    ..AddTorrentOptions::default()
+                }),
+            )
+            .await
+            .map_err(|error| TorrentError::Recheck(error.to_string()))?;
+        if response.id != Some(id) {
+            return Err(TorrentError::Recheck(
+                "The torrent engine restored the check under an unexpected ID.".into(),
+            ));
+        }
+        self.persistence
+            .mark_recheck_engine_reset(info_hash)
+            .map_err(TorrentError::Persistence)
+    }
+
     pub async fn resume_torrent(&self, id: usize) -> Result<TorrentStatus, TorrentError> {
         self.start_or_queue_torrent(id).await
     }
@@ -1172,6 +1384,7 @@ impl TorrentService {
             self.persistence
                 .remove_torrent(&info_hash)
                 .map_err(TorrentError::Persistence)?;
+            self.remove_recheck_metainfo(&info_hash);
             self.remove_from_queue(&info_hash)?;
             return Ok(());
         }
@@ -1193,6 +1406,7 @@ impl TorrentService {
             self.persistence
                 .remove_torrent(&info_hash)
                 .map_err(TorrentError::Persistence)?;
+            self.remove_recheck_metainfo(&info_hash);
             self.remove_from_queue(&info_hash)?;
         }
         self.schedule_queue_locked().await?;
@@ -1257,11 +1471,12 @@ impl TorrentService {
         self.decorate_torrents(&mut torrents)?;
         torrents.sort_by_key(|torrent| {
             let state_order = match torrent.state {
-                TorrentState::Downloading => 0,
-                TorrentState::Queued => 1,
-                TorrentState::Paused => 2,
-                TorrentState::Error => 3,
-                TorrentState::Completed => 4,
+                TorrentState::Checking => 0,
+                TorrentState::Downloading => 1,
+                TorrentState::Queued => 2,
+                TorrentState::Paused => 3,
+                TorrentState::Error => 4,
+                TorrentState::Completed => 5,
             };
             let queue_position = if torrent.state == TorrentState::Queued {
                 torrent.queue_position.unwrap_or(usize::MAX)
@@ -1290,7 +1505,17 @@ impl TorrentService {
             .ok()
             .map(|snapshot| snapshot.peers.len());
         let output_path = PathBuf::from(&details.output_folder);
+        let is_initializing = matches!(stats.state, TorrentStatsState::Initializing { .. });
         let mut status = status_from_parts(details, stats, connected_peers);
+        if is_initializing
+            && self
+                .persistence
+                .recheck_state(&status.info_hash)
+                .map_err(TorrentError::Persistence)?
+                .is_some_and(|(checking, _)| checking)
+        {
+            status.state = TorrentState::Checking;
+        }
         self.persistence
             .update_torrent(&mut status, output_path)
             .map_err(TorrentError::Persistence)?;
@@ -1417,8 +1642,24 @@ impl TorrentService {
                 );
                 continue;
             }
-            let source = cached_torrent_file(persistence_directory, &record.info_hash);
-            let add_torrent = match source.and_then(|path| fs::read(path).ok()) {
+            let source = if record.is_rechecking {
+                self.recheck_metainfo_path(&record.info_hash).ok()
+            } else {
+                cached_torrent_file(persistence_directory, &record.info_hash)
+            };
+            let source_bytes = source.and_then(|path| fs::read(path).ok());
+            if record.is_rechecking
+                && !source_bytes
+                    .as_ref()
+                    .is_some_and(|bytes| librqbit::torrent_from_bytes(bytes).is_ok())
+            {
+                eprintln!(
+                    "Could not recover in-progress verification for {}: temporary torrent metadata is missing or invalid.",
+                    record.info_hash
+                );
+                continue;
+            }
+            let add_torrent = match source_bytes {
                 Some(bytes) if librqbit::torrent_from_bytes(&bytes).is_ok() => {
                     AddTorrent::from_bytes(bytes)
                 }
@@ -1428,10 +1669,108 @@ impl TorrentService {
                 output_folder: Some(record.output_path.to_string_lossy().into_owned()),
                 paused: true,
                 only_files: record.selected_file_indices.clone(),
+                overwrite: record.is_rechecking,
+                preferred_id: record.is_rechecking.then_some(record.id),
+                trackers: record
+                    .is_rechecking
+                    .then_some(record.recheck_trackers.clone()),
                 ..AddTorrentOptions::default()
             };
-            if let Err(error) = self.api.api_add_torrent(add_torrent, Some(options)).await {
-                eprintln!("Could not restore torrent {}: {error}", record.info_hash);
+            match self.api.api_add_torrent(add_torrent, Some(options)).await {
+                Ok(_) if record.is_rechecking => {
+                    // Reconstructing from the recheck sidecar already starts a
+                    // fresh full check; don't delete and scan it a second time.
+                    self.persistence
+                        .mark_recheck_engine_reset(&record.info_hash)
+                        .map_err(TorrentError::Persistence)?;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    eprintln!("Could not restore torrent {}: {error}", record.info_hash);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn resume_interrupted_rechecks(&self) -> Result<(), TorrentError> {
+        let records = self
+            .persistence
+            .torrents()
+            .map_err(TorrentError::Persistence)?;
+        for record in records
+            .into_iter()
+            .filter(|record| record.is_rechecking && !record.recheck_engine_reset)
+        {
+            let Some(handle) = self.session.get(TorrentIdOrHash::Id(record.id)) else {
+                continue;
+            };
+            let (metainfo, output_path, only_files) = handle
+                .with_metadata(|metadata| {
+                    (
+                        metadata.torrent_bytes.clone(),
+                        handle.output_folder().to_path_buf(),
+                        record
+                            .selected_file_indices
+                            .clone()
+                            .or_else(|| handle.only_files()),
+                    )
+                })
+                .map_err(|error| TorrentError::Recheck(error.to_string()))?;
+            self.reset_recheck_engine_entry(
+                record.id,
+                &record.info_hash,
+                metainfo,
+                &output_path,
+                only_files,
+                record.recheck_trackers,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn finalize_completed_rechecks_locked(&self) -> Result<(), TorrentError> {
+        let records = self
+            .persistence
+            .torrents()
+            .map_err(TorrentError::Persistence)?;
+        for record in records.into_iter().filter(|record| record.is_rechecking) {
+            let id = TorrentIdOrHash::Id(record.id);
+            let Ok(stats) = self.api.api_stats_v1(id) else {
+                continue;
+            };
+            if matches!(stats.state, TorrentStatsState::Initializing { .. }) {
+                continue;
+            }
+
+            let resume_after = self
+                .persistence
+                .finish_recheck(&record.info_hash)
+                .map_err(TorrentError::Persistence)?;
+            self.remove_recheck_metainfo(&record.info_hash);
+            let mut queue = self.queue.lock().map_err(|_| TorrentError::QueueLock)?;
+            let hash = record.info_hash.to_ascii_lowercase();
+            if matches!(stats.state, TorrentStatsState::Error) {
+                queue.waiting.retain(|entry| entry != &hash);
+            } else if stats.finished {
+                queue.waiting.retain(|entry| entry != &hash);
+            } else if resume_after {
+                if !queue.order.contains(&hash) {
+                    queue.order.push(hash.clone());
+                }
+                if !queue.waiting.contains(&hash) {
+                    queue.waiting.push(hash.clone());
+                }
+            } else {
+                queue.waiting.retain(|entry| entry != &hash);
+            }
+            self.persist_queue_locked(&queue)?;
+            drop(queue);
+
+            // Refresh the persisted state after clearing the verification marker.
+            if self.session.get(id).is_some() {
+                let _ = self.get_torrent_status(record.id)?;
             }
         }
         Ok(())
@@ -1499,7 +1838,9 @@ impl TorrentService {
                             .api_torrent_action_start(TorrentIdOrHash::Id(torrent.id))
                             .await
                     }
-                    TorrentState::Error | TorrentState::Completed => continue,
+                    TorrentState::Checking | TorrentState::Error | TorrentState::Completed => {
+                        continue
+                    }
                 }
             } else {
                 if matches!(
@@ -1528,6 +1869,17 @@ impl TorrentService {
                             queue.waiting.push(torrent.info_hash.to_ascii_lowercase());
                         }
                     }
+                }
+                Err(error)
+                    if should_run
+                        && error
+                            .to_string()
+                            .to_ascii_lowercase()
+                            .contains("already live") =>
+                {
+                    // A restored torrent can finish its fast-resume scan
+                    // between the status snapshot and this start call.
+                    active += 1;
                 }
                 Err(error) => eprintln!("Could not restore torrent {}: {error}", torrent.id),
             }
@@ -1806,6 +2158,36 @@ fn validate_torrent_paths_for_output(
     Ok(())
 }
 
+/// librqbit's normal initialization calls `set_len` after scanning files. A
+/// larger-than-metainfo file would therefore be truncated after verification,
+/// so refuse to recheck that destination before handing it back to the engine.
+fn validate_recheck_files(
+    output_directory: &Path,
+    files: &[(PathBuf, u64)],
+) -> Result<(), TorrentError> {
+    let root = validate_directory(output_directory)?;
+    let paths = files
+        .iter()
+        .map(|(path, _)| path.to_string_lossy().replace('\\', "/"))
+        .collect::<Vec<_>>();
+    validate_torrent_paths_for_output(&root, &paths)?;
+
+    for (relative_path, expected_size) in files {
+        let full_path = root.join(relative_path);
+        match fs::metadata(&full_path) {
+            Ok(metadata) if metadata.is_file() && metadata.len() > *expected_size => {
+                return Err(TorrentError::RecheckWouldTruncate(
+                    relative_path.to_string_lossy().into_owned(),
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(TorrentError::Recheck(error.to_string())),
+        }
+    }
+    Ok(())
+}
+
 fn classify_torrent_file(extension: Option<&str>) -> (TorrentFileCategory, bool) {
     let extension = extension.unwrap_or_default().to_ascii_lowercase();
     let category = if matches!(
@@ -2003,10 +2385,13 @@ fn status_from_parts(
                 };
                 let file_state = if !file.included {
                     TorrentFileState::Skipped
+                } else if state == TorrentState::Checking {
+                    TorrentFileState::Checking
                 } else if progress_percent >= 100.0 {
                     TorrentFileState::Completed
                 } else {
                     match state {
+                        TorrentState::Checking => TorrentFileState::Checking,
                         TorrentState::Queued => TorrentFileState::Queued,
                         TorrentState::Downloading => TorrentFileState::Downloading,
                         TorrentState::Paused => TorrentFileState::Paused,
@@ -2067,10 +2452,12 @@ fn mask_peer_address(address: &str) -> String {
 }
 
 fn torrent_state_from_engine(state: TorrentStatsState, finished: bool) -> TorrentState {
+    if finished {
+        return TorrentState::Completed;
+    }
     match state {
         TorrentStatsState::Initializing { paused: true } => TorrentState::Paused,
         TorrentStatsState::Initializing { paused: false } => TorrentState::Queued,
-        TorrentStatsState::Live if finished => TorrentState::Completed,
         TorrentStatsState::Live => TorrentState::Downloading,
         TorrentStatsState::Paused => TorrentState::Paused,
         TorrentStatsState::Error => TorrentState::Error,
@@ -2479,6 +2866,198 @@ mod tests {
             torrent_state_from_engine(TorrentStatsState::Live, false),
             TorrentState::Downloading
         );
+    }
+
+    #[tokio::test]
+    async fn force_recheck_accepts_valid_data_and_requeues_a_changed_piece_without_rewriting_it() {
+        let temp = tempfile::tempdir().expect("temporary recheck directory");
+        let downloads = temp.path().join("downloads");
+        let rqbit_directory = temp.path().join("rqbit");
+        fs::create_dir_all(&downloads).expect("create download folder");
+        fs::create_dir_all(&rqbit_directory).expect("create engine persistence folder");
+
+        let session = Session::new_with_opts(
+            downloads.clone(),
+            SessionOptions {
+                dht: None,
+                listen: None,
+                fastresume: true,
+                persistence: Some(SessionPersistenceConfig::Json {
+                    folder: Some(rqbit_directory.clone()),
+                }),
+                ..SessionOptions::default()
+            },
+        )
+        .await
+        .expect("create persistent test session");
+        let service = TorrentService::with_persistence(
+            session,
+            downloads.clone(),
+            ApplicationPersistence::in_memory(),
+            Some(rqbit_directory),
+        )
+        .expect("create torrent service");
+        let response = service
+            .api
+            .api_add_torrent(
+                AddTorrent::from_bytes(ONE_BYTE_TORRENT.to_vec()),
+                Some(AddTorrentOptions {
+                    output_folder: Some(downloads.to_string_lossy().into_owned()),
+                    paused: true,
+                    ..AddTorrentOptions::default()
+                }),
+            )
+            .await
+            .expect("add controlled test torrent");
+        let id = response.id.expect("torrent engine ID");
+        service
+            .session
+            .get(TorrentIdOrHash::Id(id))
+            .expect("test torrent handle")
+            .wait_until_initialized()
+            .await
+            .expect("initial piece check");
+
+        fs::write(downloads.join("hello"), b"x").expect("write valid torrent content");
+        let original = service.get_torrent_status(id).expect("read initial status");
+
+        fs::write(downloads.join("hello"), b"longer user file")
+            .expect("simulate external file change");
+        assert!(matches!(
+            service.force_recheck(id).await,
+            Err(TorrentError::RecheckWouldTruncate(_))
+        ));
+        assert_eq!(
+            fs::read(downloads.join("hello")).expect("read oversized user file"),
+            b"longer user file",
+            "recheck must not truncate an externally changed file"
+        );
+        fs::write(downloads.join("hello"), b"x").expect("restore expected file length");
+
+        service
+            .force_recheck(id)
+            .await
+            .expect("recheck valid piece data");
+        let mut verified = original.clone();
+        for _ in 0..100 {
+            verified = service
+                .refresh_torrents()
+                .await
+                .expect("refresh active recheck")
+                .into_iter()
+                .find(|torrent| torrent.id == id)
+                .expect("torrent remains in the library");
+            if verified.state == TorrentState::Completed {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(verified.state, TorrentState::Completed);
+
+        fs::write(downloads.join("hello"), b"z").expect("tamper with verified content");
+        service
+            .force_recheck(id)
+            .await
+            .expect("recheck deliberately changed piece data");
+        let mut damaged = verified;
+        for _ in 0..100 {
+            damaged = service
+                .refresh_torrents()
+                .await
+                .expect("refresh damaged-data recheck")
+                .into_iter()
+                .find(|torrent| torrent.id == id)
+                .expect("torrent remains in the library");
+            if matches!(
+                damaged.state,
+                TorrentState::Downloading | TorrentState::Queued
+            ) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(matches!(
+            damaged.state,
+            TorrentState::Downloading | TorrentState::Queued
+        ));
+        assert_eq!(
+            fs::read(downloads.join("hello")).expect("read tampered content"),
+            b"z"
+        );
+        assert_eq!(damaged.downloaded_bytes, 0);
+        service.api.session().stop().await;
+    }
+
+    #[tokio::test]
+    async fn canceling_recheck_leaves_existing_file_data_untouched() {
+        let temp = tempfile::tempdir().expect("temporary recheck directory");
+        let downloads = temp.path().join("downloads");
+        let rqbit_directory = temp.path().join("rqbit");
+        fs::create_dir_all(&downloads).expect("create download folder");
+        fs::create_dir_all(&rqbit_directory).expect("create engine persistence folder");
+        let session = Session::new_with_opts(
+            downloads.clone(),
+            SessionOptions {
+                dht: None,
+                listen: None,
+                fastresume: true,
+                persistence: Some(SessionPersistenceConfig::Json {
+                    folder: Some(rqbit_directory.clone()),
+                }),
+                ..SessionOptions::default()
+            },
+        )
+        .await
+        .expect("create persistent test session");
+        let service = TorrentService::with_persistence(
+            session,
+            downloads.clone(),
+            ApplicationPersistence::in_memory(),
+            Some(rqbit_directory),
+        )
+        .expect("create torrent service");
+        let id = service
+            .api
+            .api_add_torrent(
+                AddTorrent::from_bytes(ONE_BYTE_TORRENT.to_vec()),
+                Some(AddTorrentOptions {
+                    output_folder: Some(downloads.to_string_lossy().into_owned()),
+                    paused: true,
+                    ..AddTorrentOptions::default()
+                }),
+            )
+            .await
+            .expect("add controlled test torrent")
+            .id
+            .expect("torrent engine ID");
+        service
+            .session
+            .get(TorrentIdOrHash::Id(id))
+            .expect("test torrent handle")
+            .wait_until_initialized()
+            .await
+            .expect("initial piece check");
+        fs::write(downloads.join("hello"), b"x").expect("write valid torrent content");
+        service
+            .get_torrent_status(id)
+            .expect("persist torrent state");
+        service.force_recheck(id).await.expect("start recheck");
+        let canceled = service
+            .cancel_torrent_recheck(id)
+            .await
+            .expect("cancel active check");
+        assert_eq!(
+            fs::read(downloads.join("hello")).expect("read payload"),
+            b"x"
+        );
+        assert_eq!(
+            service
+                .persistence
+                .recheck_state(&canceled.info_hash)
+                .expect("read persisted recheck state"),
+            Some((false, false))
+        );
+        service.api.session().stop().await;
     }
 
     #[test]
@@ -3112,6 +3691,7 @@ mod tests {
             session,
             default_directory.clone(),
             ApplicationPersistence::open(app_state_path.clone()),
+            Some(rqbit_directory.clone()),
         )
         .expect("create service with persistence");
         let selected = service
@@ -3181,7 +3761,7 @@ mod tests {
                 listen: None,
                 fastresume: true,
                 persistence: Some(SessionPersistenceConfig::Json {
-                    folder: Some(rqbit_directory),
+                    folder: Some(rqbit_directory.clone()),
                 }),
                 ..SessionOptions::default()
             },
@@ -3191,7 +3771,8 @@ mod tests {
         let restored_service = TorrentService::with_persistence(
             restored_session,
             selected_directory.clone(),
-            ApplicationPersistence::open(app_state_path),
+            ApplicationPersistence::open(app_state_path.clone()),
+            Some(rqbit_directory.clone()),
         )
         .expect("create restored service");
         restored_service.apply_startup_resume_preference().await;
@@ -3213,6 +3794,20 @@ mod tests {
             restored = restored_service
                 .get_torrents()
                 .expect("refresh restored queue");
+        }
+
+        for _ in 0..40 {
+            let pending_status = restored
+                .iter()
+                .find(|torrent| torrent.info_hash == pending.info_hash)
+                .expect("unfinished torrent survives restart");
+            if pending_status.state != TorrentState::Paused {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            restored = restored_service
+                .get_torrents()
+                .expect("refresh resumed download");
         }
 
         let restored_pending = restored
@@ -3255,9 +3850,84 @@ mod tests {
             restored_service
                 .torrent_output_directory(restored_pending.id)
                 .expect("restored output folder"),
-            fs::canonicalize(selected_directory).expect("canonical selected folder")
+            fs::canonicalize(&selected_directory).expect("canonical selected folder")
+        );
+
+        restored_service
+            .force_recheck(restored_completed.id)
+            .await
+            .expect("start verification before application restart");
+        assert_eq!(
+            restored_service
+                .persistence
+                .recheck_state(&completed.info_hash)
+                .expect("read saved verification state"),
+            Some((true, true))
         );
         restored_service.api.session().stop().await;
+
+        let checking_session = Session::new_with_opts(
+            selected_directory.clone(),
+            SessionOptions {
+                dht: None,
+                listen: None,
+                fastresume: true,
+                persistence: Some(SessionPersistenceConfig::Json {
+                    folder: Some(rqbit_directory.clone()),
+                }),
+                ..SessionOptions::default()
+            },
+        )
+        .await
+        .expect("restore session during verification");
+        let checking_service = TorrentService::with_persistence(
+            checking_session,
+            selected_directory.clone(),
+            ApplicationPersistence::open(app_state_path),
+            Some(rqbit_directory),
+        )
+        .expect("restore application during verification");
+        checking_service.apply_startup_resume_preference().await;
+        assert_eq!(
+            checking_service
+                .persistence
+                .recheck_state(&completed.info_hash)
+                .expect("restore verification marker"),
+            Some((true, true))
+        );
+        let mut after_recheck_restart = checking_service
+            .refresh_torrents()
+            .await
+            .expect("refresh restarted verification");
+        for _ in 0..80 {
+            let status = after_recheck_restart
+                .iter()
+                .find(|torrent| torrent.info_hash == completed.info_hash)
+                .expect("completed torrent survives verification restart");
+            let recheck_state = checking_service
+                .persistence
+                .recheck_state(&completed.info_hash)
+                .expect("read verification state");
+            if status.state == TorrentState::Completed && recheck_state == Some((false, false)) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            after_recheck_restart = checking_service
+                .refresh_torrents()
+                .await
+                .expect("refresh verification after restart");
+        }
+        assert!(after_recheck_restart.iter().any(|torrent| {
+            torrent.info_hash == completed.info_hash && torrent.state == TorrentState::Completed
+        }));
+        assert_eq!(
+            checking_service
+                .persistence
+                .recheck_state(&completed.info_hash)
+                .expect("recheck completes after restart"),
+            Some((false, false))
+        );
+        checking_service.api.session().stop().await;
     }
 
     #[test]

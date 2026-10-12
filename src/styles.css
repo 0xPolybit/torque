@@ -748,6 +748,20 @@ button:focus-visible,
   color: #c9dabd;
 }
 
+.torrent-state--checking {
+  border-color: #3d473c;
+  color: #d1ddb9;
+}
+
+.torrent-state--checking .torrent-state__dot {
+  background: var(--color-accent);
+  animation: torrent-check-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes torrent-check-pulse {
+  50% { opacity: 0.38; }
+}
+
 .torrent-state--downloading .torrent-state__dot {
   background: var(--color-accent);
 }
@@ -834,6 +848,17 @@ button:focus-visible,
   color: var(--color-subtle);
 }
 
+.torrent-row__check-summary {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.torrent-row__check-summary strong {
+  color: var(--color-text);
+  font-weight: 620;
+}
+
 .torrent-row__progress-meta {
   flex: 0 0 auto;
   gap: 12px;
@@ -867,6 +892,10 @@ button:focus-visible,
 .torrent-row--queued .torrent-progress span,
 .torrent-row--paused .torrent-progress span {
   background: #c8a96e;
+}
+
+.torrent-row--checking .torrent-progress span {
+  background: var(--color-accent);
 }
 
 .torrent-row--completed .torrent-progress span {
@@ -1591,6 +1620,10 @@ dialog.torrent-details::backdrop {
 
 .torrent-files__state--completed {
   color: #9fc6a9;
+}
+
+.torrent-files__state--checking {
+  color: #d1ddb9;
 }
 
 .torrent-files__state--skipped,
@@ -2632,6 +2665,12 @@ dialog.torrent-details::backdrop {
   color: #43663e;
 }
 
+:root[data-color-scheme="light"] .torrent-state--checking {
+  border-color: #d2dfca;
+  background: #edf5e8;
+  color: #43663e;
+}
+
 :root[data-color-scheme="light"] .torrent-state--paused,
 :root[data-color-scheme="light"] .torrent-state--queued {
   border-color: #e6dac1;
@@ -2686,6 +2725,7 @@ dialog.torrent-details::backdrop {
 }
 
 :root[data-color-scheme="light"] .torrent-files__state--completed,
+:root[data-color-scheme="light"] .torrent-files__state--checking,
 :root[data-color-scheme="light"] .torrent-files__footer > span svg {
   color: var(--color-success-text);
 }

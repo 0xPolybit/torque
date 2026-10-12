@@ -275,6 +275,28 @@ pub async fn retry_torrent(
 }
 
 #[tauri::command]
+pub async fn force_recheck(
+    service: State<'_, TorrentService>,
+    torrent_id: usize,
+) -> Result<TorrentStatus, String> {
+    service
+        .force_recheck(torrent_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn cancel_torrent_recheck(
+    service: State<'_, TorrentService>,
+    torrent_id: usize,
+) -> Result<TorrentStatus, String> {
+    service
+        .cancel_torrent_recheck(torrent_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn remove_torrent(
     service: State<'_, TorrentService>,
     torrent_id: usize,

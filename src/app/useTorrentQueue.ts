@@ -2,7 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import {
   discardTorrentPreview as discardDesktopTorrentPreview,
   discardTorrentFileSelection,
+  cancelTorrentRecheck as cancelDesktopTorrentRecheck,
   describeError,
+  forceRecheck as forceDesktopRecheck,
   getDownloadDirectories,
   getAppPreferences,
   getTorrents,
@@ -323,8 +325,10 @@ export function useTorrentQueue(enabled: boolean) {
           pause: "Download paused.",
           resume: "Download resumed.",
           retry: "Retry started.",
-    remove: "Torrent removed from Torque.",
-    "move-queue": "Queue order updated.",
+          "force-recheck": "Integrity check started.",
+          "cancel-recheck": "Integrity check ended. Your downloaded files were left unchanged.",
+          remove: "Torrent removed from Torque.",
+          "move-queue": "Queue order updated.",
           "update-files": "File selection updated.",
         };
         if (successMessages[action]) {
@@ -379,6 +383,10 @@ export function useTorrentQueue(enabled: boolean) {
       runTorrentAction(torrentId, "resume", () => resumeDesktopTorrent(torrentId)), [runTorrentAction]),
     retryTorrent: useCallback((torrentId: number) =>
       runTorrentAction(torrentId, "retry", () => retryDesktopTorrent(torrentId)), [runTorrentAction]),
+    forceRecheck: useCallback((torrentId: number) =>
+      runTorrentAction(torrentId, "force-recheck", () => forceDesktopRecheck(torrentId)), [runTorrentAction]),
+    cancelTorrentRecheck: useCallback((torrentId: number) =>
+      runTorrentAction(torrentId, "cancel-recheck", () => cancelDesktopTorrentRecheck(torrentId)), [runTorrentAction]),
     removeTorrent: useCallback((torrentId: number, deleteFiles = false) =>
       runTorrentAction(torrentId, "remove", () => removeDesktopTorrent(torrentId, deleteFiles)), [runTorrentAction]),
     openTorrentFolder: useCallback((torrentId: number) =>

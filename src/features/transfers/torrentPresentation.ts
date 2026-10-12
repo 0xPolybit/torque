@@ -1,6 +1,6 @@
 import type { TorrentStatus } from "../../lib/desktop";
 
-export type TorrentFilter = "all" | "downloading" | "queued" | "paused" | "completed" | "error";
+export type TorrentFilter = "all" | "downloading" | "checking" | "queued" | "paused" | "completed" | "error";
 
 export interface TorrentStatePresentation {
   filter: Exclude<TorrentFilter, "all">;
@@ -8,6 +8,7 @@ export interface TorrentStatePresentation {
 }
 
 export function getTorrentStatePresentation(torrent: TorrentStatus): TorrentStatePresentation {
+  if (torrent.state === "checking") return { filter: "checking", label: "Checking" };
   if (torrent.state === "error") return { filter: "error", label: "Error" };
   if (torrent.state === "paused") return { filter: "paused", label: "Paused" };
   if (torrent.state === "completed" || torrent.progressPercent >= 100) {

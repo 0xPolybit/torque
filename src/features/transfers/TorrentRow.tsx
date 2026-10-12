@@ -20,6 +20,7 @@ import {
   Trash2,
   Upload,
   Users,
+  X,
 } from "lucide-react";
 import type { QueueMove, TorrentControlAction, TorrentStatus } from "../../lib/desktop";
 import { TorrentStateBadge } from "./TorrentStateBadge";
@@ -37,6 +38,8 @@ interface TorrentRowProps {
   onPause: (torrentId: number) => Promise<boolean>;
   onResume: (torrentId: number) => Promise<boolean>;
   onRetry: (torrentId: number) => Promise<boolean>;
+  onForceRecheck: (torrentId: number) => Promise<boolean>;
+  onCancelRecheck: (torrentId: number) => Promise<boolean>;
   onRemove: (torrentId: number, deleteFiles?: boolean) => Promise<boolean>;
   onOpenFolder: (torrentId: number) => Promise<boolean>;
   onOpenDetails: (torrentId: number) => void;
@@ -52,6 +55,8 @@ function TorrentRowComponent({
   onPause,
   onResume,
   onRetry,
+  onForceRecheck,
+  onCancelRecheck,
   onRemove,
   onOpenFolder,
   onOpenDetails,
@@ -65,6 +70,9 @@ function TorrentRowComponent({
     ? Math.max(0, Math.min(100, torrent.progressPercent))
     : 0;
   const roundedProgress = Math.round(progress);
+  const isChecking = torrent.state === "checking";
+  const checkedBytes = Math.min(torrent.downloadedBytes, torrent.totalBytes);
+  const remainingCheckBytes = Math.max(0, torrent.totalBytes - checkedBytes);
   const presentation = getTorrentStatePresentation(torrent);
   const eta = estimateTimeRemaining(torrent);
   const actionBusy = pendingAction !== null;
@@ -94,6 +102,10 @@ function TorrentRowComponent({
             ? "Opening…"
           : pendingAction === "move-queue"
             ? "Moving…"
+            : pendingAction === "force-recheck"
+              ? "Starting check…"
+              : pendingAction === "cancel-recheck"
+                ? "Canceling check…"
             : null;
   const PrimaryIcon = primaryAction?.icon;
 
@@ -171,6 +183,17 @@ function TorrentRowComponent({
             </button>
             {actionsOpen && (
               <div className="torrent-row__menu" role="menu" aria-label="Torrent actions">
+                {isChecking ? (
+                  <button type="button" role="menuitem" disabled={actionBusy} onClick={() => { setActionsOpen(false); void onCancelRecheck(torrent.id); }}>
+                    <X size={13} aria-hidden="true" />
+                    <span>Cancel verification<small>Leave downloaded files unchanged</small></span>
+                  </button>
+                ) : torrent.engineAvailable && (
+                  <button type="button" role="menuitem" disabled={actionBusy} onClick={() => { setActionsOpen(false); void onForceRecheck(torrent.id); }}>
+                    <RotateCw size={13} aria-hidden="true" />
+                    <span>Force recheck<small>Verify files against piece hashes</small></span>
+                  </button>
+                )}
                 <button type="button" role="menuitem" onClick={() => { setActionsOpen(false); void onRemove(torrent.id, false); }}>
                   <Trash2 size={13} aria-hidden="true" />
                   <span>{torrent.state === "completed" ? "Remove from list" : "Remove torrent"}<small>Keep downloaded files</small></span>
@@ -199,11 +222,20 @@ function TorrentRowComponent({
       )}
 
       <div className="torrent-row__progress-head">
-        <span className="torrent-row__amount">
-          {formatBytes(torrent.downloadedBytes)} <span>of</span> {formatBytes(torrent.totalBytes)}
-        </span>
+        {isChecking ? (
+          <span className="torrent-row__amount torrent-row__check-summary">
+            <strong>Checking files</strong>
+            <span>Checked {formatBytes(checkedBytes)}</span>
+          </span>
+        ) : (
+          <span className="torrent-row__amount">
+            {formatBytes(torrent.downloadedBytes)} <span>of</span> {formatBytes(torrent.totalBytes)}
+          </span>
+        )}
         <span className="torrent-row__progress-meta">
-          {eta && <span className="torrent-row__eta"><Clock3 size={12} aria-hidden="true" /> {eta} left</span>}
+          {isChecking
+            ? <span className="torrent-row__eta">{formatBytes(remainingCheckBytes)} to check</span>
+            : eta && <span className="torrent-row__eta"><Clock3 size={12} aria-hidden="true" /> {eta} left</span>}
           <span>{roundedProgress}%</span>
         </span>
       </div>
@@ -211,7 +243,7 @@ function TorrentRowComponent({
       <div
         className="torrent-progress"
         role="progressbar"
-        aria-label={`${title} download progress`}
+        aria-label={isChecking ? `${title} integrity verification progress` : `${title} download progress`}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={roundedProgress}
@@ -219,7 +251,7 @@ function TorrentRowComponent({
         <span style={{ transform: `scaleX(${progress / 100})` }} />
       </div>
 
-      <div className="torrent-row__stats" aria-label="Transfer statistics">
+      {!isChecking && <div className="torrent-row__stats" aria-label="Transfer statistics">
         <span className="torrent-row__stat">
           <Download size={13} aria-hidden="true" />
           <span className="torrent-row__stat-label">Down</span>
@@ -235,7 +267,7 @@ function TorrentRowComponent({
           <span className="torrent-row__stat-label">Peers</span>
           <strong>{torrent.connectedPeers === null ? "—" : torrent.connectedPeers}</strong>
         </span>
-      </div>
+      </div>}
 
     </article>
   );
@@ -265,6 +297,8 @@ export const TorrentRow = memo(TorrentRowComponent, (previous, next) =>
   && previous.onPause === next.onPause
   && previous.onResume === next.onResume
   && previous.onRetry === next.onRetry
+  && previous.onForceRecheck === next.onForceRecheck
+  && previous.onCancelRecheck === next.onCancelRecheck
   && previous.onRemove === next.onRemove
   && previous.onOpenFolder === next.onOpenFolder
   && previous.onOpenDetails === next.onOpenDetails

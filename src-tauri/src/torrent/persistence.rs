@@ -73,6 +73,14 @@ pub struct PersistedTorrent {
     pub source_type: TorrentSourceType,
     #[serde(default)]
     pub selected_file_indices: Option<Vec<usize>>,
+    #[serde(default)]
+    pub is_rechecking: bool,
+    #[serde(default)]
+    pub resume_after_recheck: bool,
+    #[serde(default)]
+    pub recheck_engine_reset: bool,
+    #[serde(default)]
+    pub recheck_trackers: Vec<String>,
 }
 
 impl PersistedTorrent {
@@ -266,6 +274,74 @@ impl ApplicationPersistence {
             .map_err(|_| "state lock poisoned".to_string())
     }
 
+    pub fn begin_recheck(
+        &self,
+        info_hash: &str,
+        resume_after: bool,
+        trackers: Vec<String>,
+    ) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "state lock poisoned".to_string())?;
+        let record = state
+            .torrents
+            .get_mut(&info_hash.to_ascii_lowercase())
+            .ok_or_else(|| "torrent is not present in the saved library".to_string())?;
+        record.is_rechecking = true;
+        record.resume_after_recheck = resume_after;
+        record.recheck_engine_reset = false;
+        record.recheck_trackers = trackers;
+        record.last_state = TorrentState::Checking;
+        self.write_locked(&state)
+    }
+
+    pub fn mark_recheck_engine_reset(&self, info_hash: &str) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "state lock poisoned".to_string())?;
+        let record = state
+            .torrents
+            .get_mut(&info_hash.to_ascii_lowercase())
+            .ok_or_else(|| "torrent is not present in the saved library".to_string())?;
+        record.recheck_engine_reset = true;
+        self.write_locked(&state)
+    }
+
+    pub fn finish_recheck(&self, info_hash: &str) -> Result<bool, String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "state lock poisoned".to_string())?;
+        let Some(record) = state.torrents.get_mut(&info_hash.to_ascii_lowercase()) else {
+            return Ok(false);
+        };
+        let resume_after = record.resume_after_recheck;
+        record.is_rechecking = false;
+        record.resume_after_recheck = false;
+        record.recheck_engine_reset = false;
+        record.recheck_trackers.clear();
+        // The old completion bit is not authoritative once verification ends.
+        // The engine status refresh below will mark it complete again if all
+        // selected piece hashes still match.
+        record.last_state = TorrentState::Paused;
+        self.write_locked(&state)?;
+        Ok(resume_after)
+    }
+
+    pub fn recheck_state(&self, info_hash: &str) -> Result<Option<(bool, bool)>, String> {
+        self.state
+            .lock()
+            .map(|state| {
+                state
+                    .torrents
+                    .get(&info_hash.to_ascii_lowercase())
+                    .map(|record| (record.is_rechecking, record.recheck_engine_reset))
+            })
+            .map_err(|_| "state lock poisoned".to_string())
+    }
+
     pub fn update_torrent(
         &self,
         status: &mut TorrentStatus,
@@ -353,6 +429,12 @@ impl ApplicationPersistence {
             completed_at,
             source_type,
             selected_file_indices,
+            is_rechecking: prior.is_some_and(|record| record.is_rechecking),
+            resume_after_recheck: prior.is_some_and(|record| record.resume_after_recheck),
+            recheck_engine_reset: prior.is_some_and(|record| record.recheck_engine_reset),
+            recheck_trackers: prior
+                .map(|record| record.recheck_trackers.clone())
+                .unwrap_or_default(),
         };
         let should_write = prior.is_none_or(|prior| {
             prior.id != record.id
@@ -364,6 +446,10 @@ impl ApplicationPersistence {
                 || prior.completed_at != record.completed_at
                 || prior.source_type != record.source_type
                 || prior.selected_file_indices != record.selected_file_indices
+                || prior.is_rechecking != record.is_rechecking
+                || prior.resume_after_recheck != record.resume_after_recheck
+                || prior.recheck_engine_reset != record.recheck_engine_reset
+                || prior.recheck_trackers != record.recheck_trackers
                 || (prior.progress_percent - record.progress_percent).abs() >= 1.0
         });
         state.torrents.insert(key, record);

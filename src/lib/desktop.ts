@@ -76,12 +76,12 @@ export interface TorrentFile {
   downloadedBytes: string;
   progressPercent: number;
   included: boolean;
-  state: "skipped" | "queued" | "downloading" | "paused" | "completed" | "error";
+  state: "skipped" | "checking" | "queued" | "downloading" | "paused" | "completed" | "error";
 }
 
-export type TorrentState = "queued" | "downloading" | "paused" | "completed" | "error";
+export type TorrentState = "queued" | "downloading" | "checking" | "paused" | "completed" | "error";
 export type TorrentSourceType = "magnet" | "torrent_file" | "torrent_url" | "unknown";
-export type TorrentControlAction = "pause" | "resume" | "retry" | "remove" | "open-folder" | "update-files" | "move-queue";
+export type TorrentControlAction = "pause" | "resume" | "retry" | "force-recheck" | "cancel-recheck" | "remove" | "open-folder" | "update-files" | "move-queue";
 export type QueueMove = "up" | "down" | "top" | "bottom";
 
 export interface TorrentPeerStatus {
@@ -192,6 +192,14 @@ export function resumeTorrent(torrentId: number): Promise<TorrentStatus> {
 
 export function retryTorrent(torrentId: number): Promise<TorrentStatus> {
   return invoke<TorrentStatus>("retry_torrent", { torrentId });
+}
+
+export function forceRecheck(torrentId: number): Promise<TorrentStatus> {
+  return invoke<TorrentStatus>("force_recheck", { torrentId });
+}
+
+export function cancelTorrentRecheck(torrentId: number): Promise<TorrentStatus> {
+  return invoke<TorrentStatus>("cancel_torrent_recheck", { torrentId });
 }
 
 export function removeTorrent(torrentId: number, deleteFiles = false): Promise<void> {

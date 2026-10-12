@@ -28,6 +28,7 @@ Torque is a cross-platform desktop BitTorrent client built with a Tauri shell, a
   - [Build a Windows `.exe` installer](#build-a-windows-exe-installer)
 - [Adding downloads](#adding-downloads)
 - [Torrent details](#torrent-details)
+- [Integrity verification](#integrity-verification)
 - [Browse and search](#browse-and-search)
 - [Settings and persistence](#settings-and-persistence)
 - [Queue, bandwidth, and shortcuts](#queue-bandwidth-and-shortcuts)
@@ -55,6 +56,7 @@ Torque is a cross-platform desktop BitTorrent client built with a Tauri shell, a
 - Monitor aggregate download/upload rates, peers, active transfers, and queued transfers in the compact status bar.
 - Open a five-tab details view for live overview, files, peers, trackers, and torrent metainfo.
 - Pause and resume downloads, retry errors, open a completed download's folder, remove torrents while keeping their files, or explicitly delete their downloaded data.
+- Force a full piece-hash recheck, watch scan progress, cancel verification safely, and resume damaged pieces when appropriate.
 - Filter active, queued, paused, completed, and failed downloads.
 - Choose a default destination or ask for a folder each time; configure automatic start/resume, concurrent downloads, confirmation behavior, and System, Dark, or Light theme.
 - Optionally keep Torque in the system tray when its window is closed.
@@ -181,6 +183,14 @@ The **Peers**, **Trackers**, and **Info** tabs request technical metadata once w
 
 librqbit 9.0.1 does not expose per-peer download/upload rates or completion percentages, tracker announce times or per-tracker peer counts, or a separate seed count through the APIs Torque uses. These values are labeled as unavailable rather than inferred. Torrent input type is stored as a small category (`magnet`, local file, URL, or unknown); the original magnet or URL is not persisted by this feature.
 
+## Integrity verification
+
+Open a torrent's **More actions** menu and choose **Force recheck**. Torque pauses/replaces that torrent's rqbit session entry without deleting its payload, clears the engine's saved fast-resume bitfield for that entry, then lets librqbit run its normal full piece-hash scan. The row shows **Checking files**, the checked-byte progress, and the remaining scan size. When the scan ends, rqbit's rebuilt piece bitfield drives the completion state; invalid or missing selected pieces return to the normal queue when the torrent had been active, while a torrent that was paused remains paused. Use **Cancel verification** in the same menu to request a safe pause; existing file contents are left in place.
+
+The librqbit 9.0.1 public API has no standalone recheck method. `TorrentService` contains the engine-specific reset/re-add operation and preserves the torrent ID, destination, selected file indexes, trackers, and a temporary metainfo sidecar for restart recovery. The sidecar stores only torrent metadata and is removed when verification is completed, canceled, or the torrent is removed. An interrupted verification resumes on the next launch. The disk scan runs through librqbit's blocking-work spawner rather than the Tauri UI thread.
+
+Verification reads existing payload data and does not overwrite it because a hash fails. librqbit normalizes file lengths after its scan, so Torque refuses to begin a recheck if a selected existing file is larger than the torrent's declared length; the user file is preserved and the row reports why. Missing or shorter files are treated as incomplete data and can be fetched again when the torrent resumes. The displayed scan progress means bytes checked, not bytes already verified; librqbit does not expose a public per-piece result list, but its internal validated bitfield determines which pieces are complete or still needed.
+
 ## Browse and search
 
 Choose **Browse** in the navigation rail to search the configured sources. Filter results by source or category and sort by relevance, newest, size, or seeders when the provider supplies those counts. Choosing a source scopes the backend request to that provider. Use **Show more results** to request the next page. Recent searches are kept on this device and remain available beside results; clear them from Browse at any time.
@@ -230,6 +240,8 @@ Removing from Torque keeps downloaded files. The row actions menu also offers **
 ## Architecture
 
 The React frontend calls typed Tauri command wrappers. Tauri commands adapt native pickers and delegate torrent work to `TorrentService`. The service owns the long-lived `librqbit` session and uses its `list_only` metadata path to inspect local files, torrent URLs, and magnet links without registering or downloading torrent contents. Validated metainfo is held behind a short-lived opaque preview ID in Rust; the frontend receives only torrent/file metadata and file indexes. Preview metadata includes normalized file-type groups, executable/script flags, and any existing library match. Free-space lookup accepts only a registered opaque destination ID. On explicit confirmation, the service repeats hash, directory, path-containment, selection-index, and disk-space checks before starting that inspected metainfo with selected file indexes and destination. For active torrents, the service validates selection indexes against librqbit's metadata before calling `update_only_files`. File status maps the same ordered indexes to inclusion, downloaded bytes, progress, and state; selection is retained by the engine session and app state.
+
+Force recheck also stays in `TorrentService`, keeping engine-specific session manipulation out of Tauri commands and React. Because librqbit 9.0.1 exposes no public recheck API, the service uses `Session::delete(id, false)` to remove only the rqbit record and its fast-resume bitfield, then re-adds the same metainfo with the same ID, destination, file selection, and trackers in paused mode. That drives librqbit's normal initial hash validation without starting network transfer during the scan. The service persists the recheck intent and temporary metainfo sidecar before resetting the entry so startup can recover if the app closes mid-operation. After the scan, the engine's piece bitfield is authoritative and the existing queue scheduler resumes missing pieces when appropriate. An oversized-file preflight avoids librqbit's post-scan `set_len` truncation behavior for existing selected files.
 
 The nested file tree is assembled in a dedicated frontend helper and rendered as a flattened, virtualized view for both pre-download inspection and each transfer's Files tab. `TorrentFilesPanel` owns local edits, search, sort, folder tri-state, and the save action; transfer rows remain coupled to app-level torrent statuses rather than rqbit types.
 
