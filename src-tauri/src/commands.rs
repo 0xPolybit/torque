@@ -9,8 +9,9 @@ use crate::discovery::{
     TorrentSearchResponse,
 };
 use crate::torrent::{
-    AppPreferences, DownloadDirectory, QueueMove, TorrentDetails, TorrentFileSelection,
-    TorrentPreview, TorrentService, TorrentStatus,
+    AppPreferences, DownloadDirectory, QueueMove, TorrentCategory, TorrentCategoryEdit,
+    TorrentDetails, TorrentFileSelection, TorrentLibraryMetadata, TorrentPreview, TorrentService,
+    TorrentStatus, TorrentTag, TorrentTagEdit,
 };
 
 #[derive(Serialize)]
@@ -216,6 +217,89 @@ pub fn get_torrent_status(
 ) -> Result<TorrentStatus, String> {
     service
         .get_torrent_status(torrent_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn get_torrent_library_metadata(
+    service: State<'_, TorrentService>,
+) -> Result<TorrentLibraryMetadata, String> {
+    service
+        .torrent_library_metadata()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn create_torrent_category(
+    service: State<'_, TorrentService>,
+    name: String,
+) -> Result<TorrentCategory, String> {
+    service
+        .create_torrent_category(&name)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn rename_torrent_category(
+    service: State<'_, TorrentService>,
+    category_id: String,
+    name: String,
+) -> Result<TorrentCategory, String> {
+    service
+        .rename_torrent_category(&category_id, &name)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn delete_torrent_category(
+    service: State<'_, TorrentService>,
+    category_id: String,
+) -> Result<(), String> {
+    service
+        .delete_torrent_category(&category_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn create_torrent_tag(
+    service: State<'_, TorrentService>,
+    name: String,
+) -> Result<TorrentTag, String> {
+    service
+        .create_torrent_tag(&name)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn rename_torrent_tag(
+    service: State<'_, TorrentService>,
+    tag_id: String,
+    name: String,
+) -> Result<TorrentTag, String> {
+    service
+        .rename_torrent_tag(&tag_id, &name)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn delete_torrent_tag(
+    service: State<'_, TorrentService>,
+    tag_id: String,
+) -> Result<(), String> {
+    service
+        .delete_torrent_tag(&tag_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn set_torrent_library_metadata(
+    service: State<'_, TorrentService>,
+    torrent_ids: Vec<usize>,
+    category_edit: TorrentCategoryEdit,
+    tag_edit: TorrentTagEdit,
+) -> Result<(), String> {
+    service
+        .set_torrent_library_metadata(&torrent_ids, &category_edit, &tag_edit)
         .map_err(|error| error.to_string())
 }
 

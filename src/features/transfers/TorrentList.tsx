@@ -15,6 +15,9 @@ interface TorrentListProps {
   onMove: (torrentId: number, movement: QueueMove) => Promise<boolean>;
   selectedTorrentId: number | null;
   onSelectTorrent: (torrentId: number) => void;
+  bulkSelectionMode?: boolean;
+  selectedForBulkEdit?: Set<number>;
+  onToggleBulkSelection?: (torrentId: number) => void;
 }
 
 export function TorrentList({
@@ -31,6 +34,9 @@ export function TorrentList({
   onMove,
   selectedTorrentId,
   onSelectTorrent,
+  bulkSelectionMode = false,
+  selectedForBulkEdit = new Set<number>(),
+  onToggleBulkSelection,
 }: TorrentListProps) {
   return (
     <section className="queue-panel queue-panel--populated" aria-label="Torrent transfers">
@@ -52,6 +58,9 @@ export function TorrentList({
             onMove={onMove}
             selected={selectedTorrentId === torrent.id}
             onSelect={onSelectTorrent}
+            bulkSelectionMode={bulkSelectionMode}
+            bulkSelected={selectedForBulkEdit.has(torrent.id)}
+            onToggleBulkSelection={onToggleBulkSelection}
           />
         ))}
       </div>

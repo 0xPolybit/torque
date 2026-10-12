@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, Plus, Settings2, Users, Upload, Download } from "lucide-react";
+import { Activity, Check, Plus, Settings2, Users, Upload, Download } from "lucide-react";
 import { Sidebar, type AppView } from "../components/Sidebar";
 import { BackendStatus } from "../components/BackendStatus";
 import { ToastRegion } from "../components/ToastRegion";
@@ -9,9 +9,9 @@ import { EmptyFilter } from "../features/transfers/EmptyFilter";
 import { EmptyQueue } from "../features/transfers/EmptyQueue";
 import { SettingsDialog } from "../features/transfers/SettingsDialog";
 import { RemoveTorrentDialog } from "../features/transfers/RemoveTorrentDialog";
-import { TorrentFilters } from "../features/transfers/TorrentFilters";
 import { TorrentDetailsDialog } from "../features/transfers/TorrentDetailsDialog";
 import { TorrentList } from "../features/transfers/TorrentList";
+import { LibraryMetadataDialog } from "../features/transfers/LibraryMetadataDialog";
 import { filterTorrents, formatSpeed, type TorrentFilter } from "../features/transfers/torrentPresentation";
 import type { TorrentDownloadSource } from "../lib/discovery";
 import { useDesktopConnection } from "./useDesktopConnection";
@@ -24,6 +24,7 @@ export default function App() {
   const { pauseTorrent, resumeTorrent, setError } = queue;
   const [showAddTorrent, setShowAddTorrent] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showLibraryMetadata, setShowLibraryMetadata] = useState(false);
   const [detailsTorrentId, setDetailsTorrentId] = useState<number | null>(null);
   const [selectedTorrentId, setSelectedTorrentId] = useState<number | null>(null);
   const [removal, setRemoval] = useState<{ torrentId: number; deleteFiles: boolean } | null>(null);
@@ -33,10 +34,45 @@ export default function App() {
   const viewBeforeSettings = useRef<AppView>("downloads");
   const [discoverySource, setDiscoverySource] = useState<TorrentDownloadSource | null>(null);
   const [filter, setFilter] = useState<TorrentFilter>("all");
+  const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
+  const [bulkSelectionMode, setBulkSelectionMode] = useState(false);
+  const [bulkSelectedIds, setBulkSelectedIds] = useState<Set<number>>(() => new Set());
+  const toggleBulkSelection = useCallback((torrentId: number) => {
+    setBulkSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(torrentId)) next.delete(torrentId);
+      else next.add(torrentId);
+      return next;
+    });
+  }, []);
   const visibleTorrents = useMemo(
-    () => filterTorrents(queue.torrents, filter),
-    [queue.torrents, filter],
+    () => filterTorrents(queue.torrents, {
+      state: filter,
+      categoryId: categoryFilter,
+      tagId: tagFilter,
+    }),
+    [queue.torrents, filter, categoryFilter, tagFilter],
   );
+  const bulkSelectedTorrents = useMemo(
+    () => queue.torrents.filter((torrent) => bulkSelectedIds.has(torrent.id)),
+    [queue.torrents, bulkSelectedIds],
+  );
+  useEffect(() => {
+    const existingIds = new Set(queue.torrents.map((torrent) => torrent.id));
+    setBulkSelectedIds((current) => {
+      const next = new Set([...current].filter((id) => existingIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [queue.torrents]);
+  useEffect(() => {
+    if (categoryFilter && !queue.libraryMetadata.categories.some((category) => category.id === categoryFilter)) {
+      setCategoryFilter(null);
+    }
+    if (tagFilter && !queue.libraryMetadata.tags.some((tag) => tag.id === tagFilter)) {
+      setTagFilter(null);
+    }
+  }, [categoryFilter, tagFilter, queue.libraryMetadata]);
   const activeCount = queue.torrents.filter((torrent) => torrent.state === "downloading").length;
   const queuedCount = queue.torrents.filter((torrent) => torrent.state === "queued").length;
   const completedCount = queue.torrents.filter((torrent) =>
@@ -59,6 +95,11 @@ export default function App() {
     uploadSpeed: queue.torrents.reduce((total, torrent) => total + (torrent.uploadSpeedBytesPerSecond ?? 0), 0),
     peers: queue.torrents.reduce((total, torrent) => total + (torrent.connectedPeers ?? 0), 0),
   }), [queue.torrents]);
+  const filterSummary = [
+    filter === "all" ? null : filter[0].toUpperCase() + filter.slice(1),
+    categoryFilter ? queue.libraryMetadata.categories.find((category) => category.id === categoryFilter)?.name : null,
+    tagFilter ? queue.libraryMetadata.tags.find((tag) => tag.id === tagFilter)?.name : null,
+  ].filter(Boolean).join(" · ") || "All downloads";
   const shortcutModifier = connection.state === "connected" && connection.info.platform === "macos" ? "⌘" : "Ctrl";
 
   const openAddDialog = useCallback(() => {
@@ -189,6 +230,16 @@ export default function App() {
         settingsEnabled={isConnected && queue.preferencesLoaded}
         currentView={currentView}
         onNavigate={navigate}
+        torrents={queue.torrents}
+        filter={filter}
+        categoryId={categoryFilter}
+        tagId={tagFilter}
+        categories={queue.libraryMetadata.categories}
+        tags={queue.libraryMetadata.tags}
+        onFilterChange={setFilter}
+        onCategoryChange={(id) => { setCategoryFilter(id); setCurrentView("downloads"); }}
+        onTagChange={(id) => { setTagFilter(id); setCurrentView("downloads"); }}
+        onManageLibrary={() => setShowLibraryMetadata(true)}
       />
 
       <main className="workspace">
@@ -229,7 +280,7 @@ export default function App() {
           </div>
         </header>
 
-        {queue.error && !showAddTorrent && !showSettings && (
+        {queue.error && !showAddTorrent && !showSettings && !showLibraryMetadata && (
           <div className="queue-error" role="alert">{queue.error}</div>
         )}
 
@@ -285,10 +336,29 @@ export default function App() {
         ) : (
           <div className="workspace__library">
             <div className="workspace__queue-toolbar">
-              <TorrentFilters torrents={queue.torrents} value={filter} onChange={setFilter} />
-              <span className="workspace__visible-count">
-                {visibleTorrents.length} {visibleTorrents.length === 1 ? "download" : "downloads"}
-              </span>
+              <span className="workspace__filter-summary">{filterSummary}</span>
+              <div className="workspace__queue-toolbar-end">
+                <span className="workspace__visible-count">
+                  {visibleTorrents.length} {visibleTorrents.length === 1 ? "download" : "downloads"}
+                </span>
+                {bulkSelectionMode ? (
+                  <>
+                    <button className="text-button workspace__selection-button" type="button" onClick={() => setBulkSelectedIds((current) => {
+                      const next = new Set(current);
+                      visibleTorrents.forEach((torrent) => next.add(torrent.id));
+                      return next;
+                    })}>Select visible</button>
+                    <button className="primary-button workspace__selection-button" type="button" disabled={bulkSelectedIds.size === 0} onClick={() => setShowLibraryMetadata(true)}>
+                      Edit {bulkSelectedIds.size} selected
+                    </button>
+                    <button className="text-button workspace__selection-button" type="button" onClick={() => { setBulkSelectionMode(false); setBulkSelectedIds(new Set()); }}>Done</button>
+                  </>
+                ) : (
+                  <button className="text-button workspace__selection-button" type="button" onClick={() => setBulkSelectionMode(true)}>
+                    <Check size={14} aria-hidden="true" /> Select
+                  </button>
+                )}
+              </div>
             </div>
             {visibleTorrents.length > 0
               ? (
@@ -306,6 +376,9 @@ export default function App() {
                   onMove={queue.moveTorrent}
                   selectedTorrentId={selectedTorrentId}
                   onSelectTorrent={setSelectedTorrentId}
+                  bulkSelectionMode={bulkSelectionMode}
+                  selectedForBulkEdit={bulkSelectedIds}
+                  onToggleBulkSelection={toggleBulkSelection}
                 />
               )
               : <EmptyFilter filter={filter} />}
@@ -376,6 +449,31 @@ export default function App() {
           onClose={() => {
             setShowSettings(false);
             setCurrentView(viewBeforeSettings.current);
+          }}
+        />
+      )}
+
+      {showLibraryMetadata && (
+        <LibraryMetadataDialog
+          categories={queue.libraryMetadata.categories}
+          tags={queue.libraryMetadata.tags}
+          selectedTorrents={bulkSelectedTorrents}
+          busy={queue.savingLibraryMetadata}
+          error={queue.error}
+          onClose={() => setShowLibraryMetadata(false)}
+          onCreateCategory={queue.createCategory}
+          onRenameCategory={queue.renameCategory}
+          onDeleteCategory={queue.deleteCategory}
+          onCreateTag={queue.createTag}
+          onRenameTag={queue.renameTag}
+          onDeleteTag={queue.deleteTag}
+          onApply={async (torrentIds, categoryEdit, tagEdit) => {
+            const saved = await queue.updateTorrentLibraryMetadata(torrentIds, categoryEdit, tagEdit);
+            if (saved) {
+              setBulkSelectedIds(new Set());
+              setBulkSelectionMode(false);
+            }
+            return saved;
           }}
         />
       )}

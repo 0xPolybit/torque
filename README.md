@@ -32,6 +32,7 @@ Torque is a cross-platform desktop BitTorrent client built with a Tauri shell, a
 - [Browse and search](#browse-and-search)
 - [Settings and persistence](#settings-and-persistence)
 - [Queue, bandwidth, and shortcuts](#queue-bandwidth-and-shortcuts)
+- [Categories, tags, and filters](#categories-tags-and-filters)
 - [Architecture](#architecture)
 - [Security](#security)
 - [Project structure](#project-structure)
@@ -57,7 +58,9 @@ Torque is a cross-platform desktop BitTorrent client built with a Tauri shell, a
 - Open a five-tab details view for live overview, files, peers, trackers, and torrent metainfo.
 - Pause and resume downloads, retry errors, open a completed download's folder, remove torrents while keeping their files, or explicitly delete their downloaded data.
 - Force a full piece-hash recheck, watch scan progress, cancel verification safely, and resume damaged pieces when appropriate.
-- Filter active, queued, paused, completed, and failed downloads.
+- Filter downloading, seeding, completed, paused, queued, and failed downloads.
+- Organize torrents into one primary category and multiple tags, then combine status, category, and tag filters.
+- Bulk-select downloads to assign or clear categories, add or remove tags, or replace their tag set.
 - Choose a default destination or ask for a folder each time; configure automatic start/resume, concurrent downloads, confirmation behavior, and System, Dark, or Light theme.
 - Optionally keep Torque in the system tray when its window is closed.
 - Restore the rqbit session and download list across application restarts.
@@ -237,9 +240,21 @@ Download and upload caps accept custom KB/s or MB/s values, or Unlimited. These 
 
 Removing from Torque keeps downloaded files. The row actions menu also offers **Delete downloaded files**; the Rust service asks librqbit to remove only the data associated with that managed torrent, and the UI requires confirmation according to Settings. If rqbit no longer has the torrent session, Torque refuses to delete files because it cannot verify ownership. Closing to the system tray is optional and only applies to desktop builds.
 
+## Categories, tags, and filters
+
+Use the **+** control beside Categories in the sidebar to create, rename, or delete categories and tags. Each torrent can have one category and any number of tags. Names support Unicode, are trimmed, capped at 48 characters, and unique within their type. Deleting a category clears that assignment; deleting a tag removes it from torrents that use it.
+
+Choose **Select** above the download list to reveal row checkboxes. Select one or several torrents, then choose **Edit** to apply a category and tag operation. Category edits can keep each current value, assign one category, or clear the category. Tag edits can keep current tags, add selected tags, remove selected tags, or replace the full tag set. The dialog describes each operation, and reports backend validation and persistence errors.
+
+The sidebar filters by All torrents, Downloading, Seeding, Completed, and Paused, then by category and tag. Status, category, and tag conditions combine, so a category and tag can narrow the chosen status view together. Seeding is reported when librqbit marks a finished torrent live; completed downloads without an active seed session remain in Completed. Row badges show the primary category and up to two tags, with a count for any additional tags.
+
+Categories and tags are Torque library metadata keyed by the torrent info hash. They are stored in the application state JSON separately from torrent metainfo and rqbit's session files. Older state files load with empty category and tag collections, so existing torrents remain available without metadata. Changing a category only changes the library label; it never moves downloaded files or changes their destination.
+
 ## Architecture
 
 The React frontend calls typed Tauri command wrappers. Tauri commands adapt native pickers and delegate torrent work to `TorrentService`. The service owns the long-lived `librqbit` session and uses its `list_only` metadata path to inspect local files, torrent URLs, and magnet links without registering or downloading torrent contents. Validated metainfo is held behind a short-lived opaque preview ID in Rust; the frontend receives only torrent/file metadata and file indexes. Preview metadata includes normalized file-type groups, executable/script flags, and any existing library match. Free-space lookup accepts only a registered opaque destination ID. On explicit confirmation, the service repeats hash, directory, path-containment, selection-index, and disk-space checks before starting that inspected metainfo with selected file indexes and destination. For active torrents, the service validates selection indexes against librqbit's metadata before calling `update_only_files`. File status maps the same ordered indexes to inclusion, downloaded bytes, progress, and state; selection is retained by the engine session and app state.
+
+`ApplicationPersistence` stores categories, tags, and a separate info-hash keyed association map in the existing application-state file. `TorrentService` validates taxonomy edits and resolves the app-level associations into the status DTOs; it does not write them into torrent metainfo or change output paths. The frontend uses typed taxonomy commands, a shared `TorrentStatus` snapshot, a sidebar filter model, and `LibraryMetadataDialog` for taxonomy management and bulk edits. Bulk tag operations preserve existing assignments unless the user chooses add, remove, or replace.
 
 Force recheck also stays in `TorrentService`, keeping engine-specific session manipulation out of Tauri commands and React. Because librqbit 9.0.1 exposes no public recheck API, the service uses `Session::delete(id, false)` to remove only the rqbit record and its fast-resume bitfield, then re-adds the same metainfo with the same ID, destination, file selection, and trackers in paused mode. That drives librqbit's normal initial hash validation without starting network transfer during the scan. The service persists the recheck intent and temporary metainfo sidecar before resetting the entry so startup can recover if the app closes mid-operation. After the scan, the engine's piece bitfield is authoritative and the existing queue scheduler resumes missing pieces when appropriate. An oversized-file preflight avoids librqbit's post-scan `set_len` truncation behavior for existing selected files.
 
@@ -263,12 +278,13 @@ The frontend does not receive unrestricted filesystem access. Native file and fo
 
 ```text
 src/
-  app/                    App shell, desktop connection, queue and preferences state
+  app/                    App shell, desktop connection, queue, taxonomy, and preferences state
   components/             Sidebar, backend status, and toast notifications
   features/discovery/     Browse controls, results, details, recent searches, and provider state
   features/transfers/     Add/inspection/settings/details/removal dialogs, virtual file tree, filters, and transfer rows
     torrentPreviewTree.ts Build a nested file model from inspected torrent paths
     TorrentFilesPanel.tsx Searchable, sortable per-torrent file selection and progress
+    LibraryMetadataDialog.tsx Category/tag management and bulk assignment
   TorrentDetailsDialog.tsx Five-tab details view backed by queue snapshots and an on-demand details command
   SettingsDialog.tsx      Persisted queue, bandwidth, appearance, confirmation, and tray preferences
   RemoveTorrentDialog.tsx Explicit keep-files or delete-files confirmation
@@ -281,7 +297,7 @@ src-tauri/
   src/discovery/          SearchProvider contract, registry, models, and Internet Archive adapter
   src/torrent/service.rs  rqbit session, scheduler, rate limits, validation, restoration, and status mapping
   src/torrent/persistence.rs
-                          Versioned application preferences and queue metadata
+                          Versioned preferences, queue, categories, tags, and hash associations
   src/lib.rs              Service setup and command registration
   tauri.conf.json         Product metadata, window, security, and bundle settings
 frontend/

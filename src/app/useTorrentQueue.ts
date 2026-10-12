@@ -8,6 +8,14 @@ import {
   getDownloadDirectories,
   getAppPreferences,
   getTorrents,
+  getTorrentLibraryMetadata,
+  createTorrentCategory as createDesktopCategory,
+  renameTorrentCategory as renameDesktopCategory,
+  deleteTorrentCategory as deleteDesktopCategory,
+  createTorrentTag as createDesktopTag,
+  renameTorrentTag as renameDesktopTag,
+  deleteTorrentTag as deleteDesktopTag,
+  setTorrentLibraryMetadata as setDesktopTorrentLibraryMetadata,
   inspectMagnet as inspectDesktopMagnet,
   inspectTorrentFile as inspectDesktopTorrentFile,
   inspectTorrentUrl as inspectDesktopTorrentUrl,
@@ -31,6 +39,9 @@ import {
   type TorrentStatus,
   type TorrentPreview,
   type QueueMove,
+  type TorrentLibraryMetadata,
+  type TorrentCategoryEdit,
+  type TorrentTagEdit,
 } from "../lib/desktop";
 
 const LAST_DOWNLOAD_DIRECTORY_KEY = "torque:last-download-directory-id";
@@ -71,6 +82,14 @@ function sameTorrentStatus(left: TorrentStatus, right: TorrentStatus): boolean {
     && left.engineAvailable === right.engineAvailable
     && left.fileSelectionEditable === right.fileSelectionEditable
     && left.queuePosition === right.queuePosition
+    && left.isSeeding === right.isSeeding
+    && left.category?.id === right.category?.id
+    && left.category?.name === right.category?.name
+    && left.category?.defaultDownloadDirectory === right.category?.defaultDownloadDirectory
+    && left.tags.length === right.tags.length
+    && left.tags.every((tag, index) =>
+      tag.id === right.tags[index]?.id && tag.name === right.tags[index]?.name,
+    )
     && left.files.length === right.files.length
     && left.files.every((file, index) => {
       const other = right.files[index];
@@ -100,6 +119,7 @@ function reuseTorrentSnapshots(previous: TorrentStatus[], next: TorrentStatus[])
 
 export function useTorrentQueue(enabled: boolean) {
   const [torrents, setTorrents] = useState<TorrentStatus[]>([]);
+  const [libraryMetadata, setLibraryMetadata] = useState<TorrentLibraryMetadata>({ categories: [], tags: [] });
   const [initialLoading, setInitialLoading] = useState(true);
   const [directories, setDirectories] = useState<DownloadDirectory[]>([]);
   const [selectedDirectoryId, setSelectedDirectoryId] = useState("");
@@ -122,6 +142,7 @@ export function useTorrentQueue(enabled: boolean) {
   });
   const [preferencesLoaded, setPreferencesLoaded] = useState(false);
   const [savingPreference, setSavingPreference] = useState(false);
+  const [savingLibraryMetadata, setSavingLibraryMetadata] = useState(false);
   const [torrentActions, setTorrentActions] = useState<Record<number, TorrentActionState>>({});
   const [toast, setToast] = useState<{ id: number; message: string } | null>(null);
   const dismissToast = useCallback(() => setToast(null), []);
@@ -139,6 +160,14 @@ export function useTorrentQueue(enabled: boolean) {
       setError(describeError(cause));
     } finally {
       setInitialLoading(false);
+    }
+  }, []);
+
+  const refreshLibraryMetadata = useCallback(async () => {
+    try {
+      setLibraryMetadata(await getTorrentLibraryMetadata());
+    } catch (cause) {
+      setError(describeError(cause));
     }
   }, []);
 
@@ -175,6 +204,8 @@ export function useTorrentQueue(enabled: boolean) {
         if (active) setPreferencesLoaded(true);
       });
 
+    void refreshLibraryMetadata();
+
     void refreshTorrents();
     const interval = window.setInterval(() => void refreshTorrents(), 2000);
 
@@ -182,7 +213,7 @@ export function useTorrentQueue(enabled: boolean) {
       active = false;
       window.clearInterval(interval);
     };
-  }, [enabled, refreshTorrents]);
+  }, [enabled, refreshLibraryMetadata, refreshTorrents]);
 
   const chooseDirectory = useCallback(async (): Promise<boolean> => {
     if (selectingDirectory) return false;
@@ -223,6 +254,47 @@ export function useTorrentQueue(enabled: boolean) {
       setSavingPreference(false);
     }
   }, [preferences, refreshTorrents]);
+
+  const runLibraryMutation = useCallback(async (
+    operation: () => Promise<unknown>,
+    successMessage: string,
+  ): Promise<boolean> => {
+    setSavingLibraryMetadata(true);
+    setError("");
+    try {
+      await operation();
+      await refreshLibraryMetadata();
+      await refreshTorrents();
+      setToast({ id: Date.now(), message: successMessage });
+      return true;
+    } catch (cause) {
+      setError(describeError(cause));
+      return false;
+    } finally {
+      setSavingLibraryMetadata(false);
+    }
+  }, [refreshLibraryMetadata, refreshTorrents]);
+
+  const createCategory = useCallback((name: string) =>
+    runLibraryMutation(() => createDesktopCategory(name), "Category created."), [runLibraryMutation]);
+  const renameCategory = useCallback((categoryId: string, name: string) =>
+    runLibraryMutation(() => renameDesktopCategory(categoryId, name), "Category renamed."), [runLibraryMutation]);
+  const deleteCategory = useCallback((categoryId: string) =>
+    runLibraryMutation(() => deleteDesktopCategory(categoryId), "Category deleted."), [runLibraryMutation]);
+  const createTag = useCallback((name: string) =>
+    runLibraryMutation(() => createDesktopTag(name), "Tag created."), [runLibraryMutation]);
+  const renameTag = useCallback((tagId: string, name: string) =>
+    runLibraryMutation(() => renameDesktopTag(tagId, name), "Tag renamed."), [runLibraryMutation]);
+  const deleteTag = useCallback((tagId: string) =>
+    runLibraryMutation(() => deleteDesktopTag(tagId), "Tag deleted."), [runLibraryMutation]);
+  const updateTorrentLibraryMetadata = useCallback((
+    torrentIds: number[],
+    categoryEdit: TorrentCategoryEdit,
+    tagEdit: TorrentTagEdit,
+  ) => runLibraryMutation(
+    () => setDesktopTorrentLibraryMetadata(torrentIds, categoryEdit, tagEdit),
+    `Updated metadata for ${torrentIds.length} ${torrentIds.length === 1 ? "torrent" : "torrents"}.`,
+  ), [runLibraryMutation]);
 
   const chooseTorrentFile = useCallback(async (): Promise<TorrentFileSelection | null> => {
     setError("");
@@ -356,6 +428,7 @@ export function useTorrentQueue(enabled: boolean) {
 
   return {
     torrents,
+    libraryMetadata,
     initialLoading,
     directories,
     selectedDirectoryId,
@@ -369,7 +442,15 @@ export function useTorrentQueue(enabled: boolean) {
     preferences,
     preferencesLoaded,
     savingPreference,
+    savingLibraryMetadata,
     updatePreferences,
+    createCategory,
+    renameCategory,
+    deleteCategory,
+    createTag,
+    renameTag,
+    deleteTag,
+    updateTorrentLibraryMetadata,
     torrentActions,
     refreshTorrents,
     toast,

@@ -46,6 +46,9 @@ interface TorrentRowProps {
   onMove: (torrentId: number, movement: QueueMove) => Promise<boolean>;
   selected: boolean;
   onSelect: (torrentId: number) => void;
+  bulkSelectionMode: boolean;
+  bulkSelected: boolean;
+  onToggleBulkSelection?: (torrentId: number) => void;
 }
 
 function TorrentRowComponent({
@@ -63,6 +66,9 @@ function TorrentRowComponent({
   onMove,
   selected,
   onSelect,
+  bulkSelectionMode,
+  bulkSelected,
+  onToggleBulkSelection,
 }: TorrentRowProps) {
   const [actionsOpen, setActionsOpen] = useState(false);
   const title = torrent.name?.trim() || "Waiting for torrent metadata";
@@ -120,6 +126,15 @@ function TorrentRowComponent({
     >
       <div className="torrent-row__header">
         <div className="torrent-row__identity">
+          {bulkSelectionMode && (
+            <input
+              className="torrent-row__bulk-check"
+              type="checkbox"
+              checked={bulkSelected}
+              aria-label={`Select ${title} for bulk editing`}
+              onChange={() => onToggleBulkSelection?.(torrent.id)}
+            />
+          )}
           <div className="torrent-row__icon" aria-hidden="true">
             <FileDown size={17} strokeWidth={1.8} />
           </div>
@@ -139,6 +154,19 @@ function TorrentRowComponent({
               <FolderDown size={12} aria-hidden="true" />
               <span>{torrent.outputDirectory}</span>
             </span>
+            {(torrent.category || torrent.tags.length > 0) && (
+              <div className="torrent-row__library-badges" aria-label="Torrent category and tags">
+                {torrent.category && <span className="torrent-row__category-badge">{torrent.category.name}</span>}
+                {torrent.tags.slice(0, 2).map((tag) => (
+                  <span className="torrent-row__tag-badge" key={tag.id}>{tag.name}</span>
+                ))}
+                {torrent.tags.length > 2 && (
+                  <span className="torrent-row__more-tags" title={torrent.tags.slice(2).map((tag) => tag.name).join(", ")}>
+                    +{torrent.tags.length - 2}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         </div>
         <div className="torrent-row__header-side">
@@ -286,7 +314,12 @@ function sameVisibleStatus(left: TorrentStatus, right: TorrentStatus): boolean {
     && left.uploadSpeedBytesPerSecond === right.uploadSpeedBytesPerSecond
     && left.connectedPeers === right.connectedPeers
     && left.queuePosition === right.queuePosition
-    && left.engineAvailable === right.engineAvailable;
+    && left.engineAvailable === right.engineAvailable
+    && left.isSeeding === right.isSeeding
+    && left.category?.id === right.category?.id
+    && left.category?.name === right.category?.name
+    && left.tags.length === right.tags.length
+    && left.tags.every((tag, index) => tag.id === right.tags[index]?.id && tag.name === right.tags[index]?.name);
 }
 
 export const TorrentRow = memo(TorrentRowComponent, (previous, next) =>
@@ -294,6 +327,8 @@ export const TorrentRow = memo(TorrentRowComponent, (previous, next) =>
   && previous.pendingAction === next.pendingAction
   && previous.actionError === next.actionError
   && previous.selected === next.selected
+  && previous.bulkSelectionMode === next.bulkSelectionMode
+  && previous.bulkSelected === next.bulkSelected
   && previous.onPause === next.onPause
   && previous.onResume === next.onResume
   && previous.onRetry === next.onRetry
@@ -303,5 +338,6 @@ export const TorrentRow = memo(TorrentRowComponent, (previous, next) =>
   && previous.onOpenFolder === next.onOpenFolder
   && previous.onOpenDetails === next.onOpenDetails
   && previous.onMove === next.onMove
-  && previous.onSelect === next.onSelect,
+  && previous.onSelect === next.onSelect
+  && previous.onToggleBulkSelection === next.onToggleBulkSelection,
 );

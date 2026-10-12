@@ -19,7 +19,10 @@ use tokio::sync::Mutex as AsyncMutex;
 use url::Url;
 use uuid::Uuid;
 
-use super::persistence::{now_millis, AppPreferences, ApplicationPersistence};
+use super::persistence::{
+    now_millis, AppPreferences, ApplicationPersistence, TorrentCategory, TorrentCategoryEdit,
+    TorrentLibraryMetadata, TorrentTag, TorrentTagEdit,
+};
 
 const MAX_TORRENT_FILE_SIZE: u64 = 64 * 1024 * 1024;
 
@@ -82,6 +85,8 @@ pub enum TorrentError {
     InspectionStartedTorrent,
     #[error("Could not save application state: {0}")]
     Persistence(String),
+    #[error("{0}")]
+    LibraryMetadata(String),
     #[error("The application state could not be locked.")]
     ApplicationStateLock,
     #[error("Integrity verification is already running for this torrent.")]
@@ -281,6 +286,12 @@ pub struct TorrentStatus {
     pub engine_available: bool,
     pub file_selection_editable: bool,
     pub queue_position: Option<usize>,
+    #[serde(default)]
+    pub is_seeding: bool,
+    #[serde(default)]
+    pub category: Option<TorrentCategory>,
+    #[serde(default)]
+    pub tags: Vec<TorrentTag>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -498,6 +509,9 @@ impl TorrentService {
     }
 
     fn decorate_torrents(&self, torrents: &mut [TorrentStatus]) -> Result<(), TorrentError> {
+        for torrent in torrents.iter_mut() {
+            self.attach_library_metadata(torrent)?;
+        }
         let live_hashes: HashSet<_> = torrents
             .iter()
             .filter(|torrent| torrent.state != TorrentState::Completed)
@@ -699,7 +713,90 @@ impl TorrentService {
         {
             status.state = TorrentState::Queued;
         }
+        self.attach_library_metadata(status)?;
         Ok(())
+    }
+
+    fn attach_library_metadata(&self, status: &mut TorrentStatus) -> Result<(), TorrentError> {
+        (status.category, status.tags) = self
+            .persistence
+            .resolved_torrent_metadata(&status.info_hash)
+            .map_err(TorrentError::Persistence)?;
+        Ok(())
+    }
+
+    pub fn torrent_library_metadata(&self) -> Result<TorrentLibraryMetadata, TorrentError> {
+        self.persistence
+            .torrent_library_metadata()
+            .map_err(TorrentError::Persistence)
+    }
+
+    pub fn create_torrent_category(&self, name: &str) -> Result<TorrentCategory, TorrentError> {
+        self.persistence
+            .create_category(name)
+            .map_err(TorrentError::LibraryMetadata)
+    }
+
+    pub fn rename_torrent_category(
+        &self,
+        category_id: &str,
+        name: &str,
+    ) -> Result<TorrentCategory, TorrentError> {
+        self.persistence
+            .rename_category(category_id, name)
+            .map_err(TorrentError::LibraryMetadata)
+    }
+
+    pub fn delete_torrent_category(&self, category_id: &str) -> Result<(), TorrentError> {
+        self.persistence
+            .delete_category(category_id)
+            .map_err(TorrentError::LibraryMetadata)
+    }
+
+    pub fn create_torrent_tag(&self, name: &str) -> Result<TorrentTag, TorrentError> {
+        self.persistence
+            .create_tag(name)
+            .map_err(TorrentError::LibraryMetadata)
+    }
+
+    pub fn rename_torrent_tag(&self, tag_id: &str, name: &str) -> Result<TorrentTag, TorrentError> {
+        self.persistence
+            .rename_tag(tag_id, name)
+            .map_err(TorrentError::LibraryMetadata)
+    }
+
+    pub fn delete_torrent_tag(&self, tag_id: &str) -> Result<(), TorrentError> {
+        self.persistence
+            .delete_tag(tag_id)
+            .map_err(TorrentError::LibraryMetadata)
+    }
+
+    pub fn set_torrent_library_metadata(
+        &self,
+        torrent_ids: &[usize],
+        category_edit: &TorrentCategoryEdit,
+        tag_edit: &TorrentTagEdit,
+    ) -> Result<(), TorrentError> {
+        if torrent_ids.is_empty() {
+            return Err(TorrentError::Status(
+                "Select at least one torrent to edit.".to_string(),
+            ));
+        }
+        let known_torrents = self.get_torrents()?;
+        let selected_ids: HashSet<usize> = torrent_ids.iter().copied().collect();
+        let hashes: Vec<String> = known_torrents
+            .iter()
+            .filter(|torrent| selected_ids.contains(&torrent.id))
+            .map(|torrent| torrent.info_hash.clone())
+            .collect();
+        if hashes.len() != selected_ids.len() {
+            return Err(TorrentError::Status(
+                "One or more selected torrents are no longer in your library.".to_string(),
+            ));
+        }
+        self.persistence
+            .update_torrent_metadata(&hashes, category_edit, tag_edit)
+            .map_err(TorrentError::LibraryMetadata)
     }
 
     /// Retains a validated torrent file behind an opaque, single-use frontend ID.
@@ -2429,6 +2526,9 @@ fn status_from_parts(
             TorrentStatsState::Live | TorrentStatsState::Paused
         ),
         queue_position: None,
+        is_seeding: stats.finished && matches!(stats.state, TorrentStatsState::Live),
+        category: None,
+        tags: Vec::new(),
     }
 }
 

@@ -8,6 +8,7 @@ interface EmptyFilterProps {
 const EMPTY_COPY: Record<TorrentFilter, string> = {
   all: "No downloads yet",
   downloading: "No active downloads",
+  seeding: "No torrents are seeding",
   checking: "No torrents are being checked",
   queued: "Nothing in the queue",
   completed: "No completed downloads",

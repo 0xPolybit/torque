@@ -1,6 +1,12 @@
 import type { TorrentStatus } from "../../lib/desktop";
 
-export type TorrentFilter = "all" | "downloading" | "checking" | "queued" | "paused" | "completed" | "error";
+export type TorrentFilter = "all" | "downloading" | "seeding" | "checking" | "queued" | "paused" | "completed" | "error";
+
+export interface TorrentFilterCriteria {
+  state?: TorrentFilter;
+  categoryId?: string | null;
+  tagId?: string | null;
+}
 
 export interface TorrentStatePresentation {
   filter: Exclude<TorrentFilter, "all">;
@@ -11,6 +17,7 @@ export function getTorrentStatePresentation(torrent: TorrentStatus): TorrentStat
   if (torrent.state === "checking") return { filter: "checking", label: "Checking" };
   if (torrent.state === "error") return { filter: "error", label: "Error" };
   if (torrent.state === "paused") return { filter: "paused", label: "Paused" };
+  if (torrent.isSeeding) return { filter: "seeding", label: "Seeding" };
   if (torrent.state === "completed" || torrent.progressPercent >= 100) {
     return { filter: "completed", label: "Completed" };
   }
@@ -18,9 +25,21 @@ export function getTorrentStatePresentation(torrent: TorrentStatus): TorrentStat
   return { filter: "downloading", label: "Downloading" };
 }
 
-export function filterTorrents(torrents: TorrentStatus[], filter: TorrentFilter): TorrentStatus[] {
-  if (filter === "all") return torrents;
-  return torrents.filter((torrent) => getTorrentStatePresentation(torrent).filter === filter);
+export function filterTorrents(
+  torrents: TorrentStatus[],
+  filter: TorrentFilter | TorrentFilterCriteria,
+): TorrentStatus[] {
+  const criteria = typeof filter === "string" ? { state: filter } : filter;
+  return torrents.filter((torrent) => {
+    const state = criteria.state ?? "all";
+    const matchesState = state === "all"
+      || (state === "completed"
+        ? torrent.state === "completed" || torrent.progressPercent >= 100
+        : getTorrentStatePresentation(torrent).filter === state);
+    const matchesCategory = !criteria.categoryId || torrent.category?.id === criteria.categoryId;
+    const matchesTag = !criteria.tagId || torrent.tags.some((tag) => tag.id === criteria.tagId);
+    return matchesState && matchesCategory && matchesTag;
+  });
 }
 
 export function countTorrents(torrents: TorrentStatus[], filter: TorrentFilter): number {

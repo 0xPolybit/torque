@@ -23,6 +23,35 @@ export interface AppPreferences {
   theme: ThemePreference;
 }
 
+export interface TorrentCategory {
+  id: string;
+  name: string;
+  createdAt: number;
+  defaultDownloadDirectory: string | null;
+}
+
+export interface TorrentTag {
+  id: string;
+  name: string;
+  createdAt: number;
+}
+
+export interface TorrentLibraryMetadata {
+  categories: TorrentCategory[];
+  tags: TorrentTag[];
+}
+
+export type TorrentCategoryEdit =
+  | { action: "keep" }
+  | { action: "assign"; categoryId: string }
+  | { action: "clear" };
+
+export type TorrentTagEdit =
+  | { action: "keep" }
+  | { action: "add"; tagIds: string[] }
+  | { action: "remove"; tagIds: string[] }
+  | { action: "replace"; tagIds: string[] };
+
 export interface DownloadDirectory {
   id: string;
   name: string;
@@ -130,6 +159,9 @@ export interface TorrentStatus {
   engineAvailable: boolean;
   fileSelectionEditable: boolean;
   queuePosition: number | null;
+  isSeeding: boolean;
+  category: TorrentCategory | null;
+  tags: TorrentTag[];
 }
 
 export function getAppInfo(): Promise<AppInfo> {
@@ -166,6 +198,46 @@ export function getTorrents(): Promise<TorrentStatus[]> {
 
 export function getTorrentStatus(torrentId: number): Promise<TorrentStatus> {
   return invoke<TorrentStatus>("get_torrent_status", { torrentId });
+}
+
+export function getTorrentLibraryMetadata(): Promise<TorrentLibraryMetadata> {
+  return invoke<TorrentLibraryMetadata>("get_torrent_library_metadata");
+}
+
+export function createTorrentCategory(name: string): Promise<TorrentCategory> {
+  return invoke<TorrentCategory>("create_torrent_category", { name });
+}
+
+export function renameTorrentCategory(categoryId: string, name: string): Promise<TorrentCategory> {
+  return invoke<TorrentCategory>("rename_torrent_category", { categoryId, name });
+}
+
+export function deleteTorrentCategory(categoryId: string): Promise<void> {
+  return invoke<void>("delete_torrent_category", { categoryId });
+}
+
+export function createTorrentTag(name: string): Promise<TorrentTag> {
+  return invoke<TorrentTag>("create_torrent_tag", { name });
+}
+
+export function renameTorrentTag(tagId: string, name: string): Promise<TorrentTag> {
+  return invoke<TorrentTag>("rename_torrent_tag", { tagId, name });
+}
+
+export function deleteTorrentTag(tagId: string): Promise<void> {
+  return invoke<void>("delete_torrent_tag", { tagId });
+}
+
+export function setTorrentLibraryMetadata(
+  torrentIds: number[],
+  categoryEdit: TorrentCategoryEdit,
+  tagEdit: TorrentTagEdit,
+): Promise<void> {
+  return invoke<void>("set_torrent_library_metadata", {
+    torrentIds,
+    categoryEdit,
+    tagEdit,
+  });
 }
 
 export function getTorrentDetails(torrentId: number): Promise<TorrentDetails> {
