@@ -36,6 +36,13 @@ export interface TorrentTag {
   createdAt: number;
 }
 
+export type TorrentFilePriority = "high" | "normal" | "low" | "skip";
+
+export interface TorrentFilePriorityUpdate {
+  index: number;
+  priority: TorrentFilePriority;
+}
+
 export interface TorrentLibraryMetadata {
   categories: TorrentCategory[];
   tags: TorrentTag[];
@@ -105,6 +112,7 @@ export interface TorrentFile {
   downloadedBytes: string;
   progressPercent: number;
   included: boolean;
+  priority: TorrentFilePriority;
   state: "skipped" | "checking" | "queued" | "downloading" | "paused" | "completed" | "error";
 }
 
@@ -252,6 +260,13 @@ export function updateTorrentFileSelection(
     torrentId,
     selectedFileIndices,
   });
+}
+
+export function updateTorrentFilePriorities(
+  torrentId: number,
+  updates: TorrentFilePriorityUpdate[],
+): Promise<TorrentStatus> {
+  return invoke<TorrentStatus>("update_torrent_file_priorities", { torrentId, updates });
 }
 
 export function pauseTorrent(torrentId: number): Promise<TorrentStatus> {

@@ -432,7 +432,7 @@ export default function App() {
           torrent={detailsTorrent}
           action={queue.torrentActions[detailsTorrent.id] ?? { pending: null, error: null }}
           onClose={() => setDetailsTorrentId(null)}
-          onUpdateFileSelection={queue.updateTorrentFileSelection}
+          onUpdateFilePriorities={queue.updateTorrentFilePriorities}
         />
       )}
 

@@ -3,7 +3,9 @@ import {
   Check, ChevronDown, ChevronRight, File, Folder, FolderOpen,
   ListChecks, ListX, Maximize2, Minimize2, Search,
 } from "lucide-react";
-import type { TorrentFile, TorrentStatus } from "../../lib/desktop";
+import type {
+  TorrentFile, TorrentFilePriority, TorrentFilePriorityUpdate, TorrentStatus,
+} from "../../lib/desktop";
 import { buildTorrentPreviewTree, type TorrentTreeDirectory, type TorrentTreeNode } from "./torrentPreviewTree";
 import { formatExactBytes } from "./torrentPresentation";
 
@@ -11,12 +13,13 @@ const ROW_HEIGHT = 34;
 const OVERSCAN = 8;
 
 type FileSort = "name" | "size" | "progress";
+type PriorityChoice = TorrentFilePriority | "mixed";
 
 interface TorrentFilesPanelProps {
   torrent: TorrentStatus;
   busy: boolean;
   saving: boolean;
-  onSave: (torrentId: number, selectedIndices: number[]) => Promise<boolean>;
+  onSave: (torrentId: number, updates: TorrentFilePriorityUpdate[]) => Promise<boolean>;
 }
 
 interface VisibleRow {
@@ -25,9 +28,9 @@ interface VisibleRow {
 }
 
 export function TorrentFilesPanel({ torrent, busy, saving, onSave }: TorrentFilesPanelProps) {
-  const [selected, setSelected] = useState(() => new Set(
-    torrent.files.filter((file) => file.included).map((file) => file.index),
-  ));
+  const [priorities, setPriorities] = useState<Map<number, TorrentFilePriority>>(() =>
+    new Map(torrent.files.map((file) => [file.index, file.priority])),
+  );
   const [dirty, setDirty] = useState(false);
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState<FileSort>("name");
@@ -37,10 +40,15 @@ export function TorrentFilesPanel({ torrent, busy, saving, onSave }: TorrentFile
 
   useEffect(() => {
     if (!dirty) {
-      setSelected(new Set(torrent.files.filter((file) => file.included).map((file) => file.index)));
+      setPriorities(new Map(torrent.files.map((file) => [file.index, file.priority])));
     }
   }, [torrent.files, dirty]);
 
+  const selected = useMemo(() => new Set(
+    torrent.files
+      .filter((file) => (priorities.get(file.index) ?? file.priority) !== "skip")
+      .map((file) => file.index),
+  ), [torrent.files, priorities]);
   const filteredFiles = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     return torrent.files
@@ -90,37 +98,69 @@ export function TorrentFilesPanel({ torrent, busy, saving, onSave }: TorrentFile
   const visibleRows = rows.slice(firstVisible, firstVisible + visibleCount);
   const canChange = torrent.engineAvailable && torrent.fileSelectionEditable && torrent.files.length > 0;
   const hasFolders = tree.directories.length > 0;
+  const visibleSelectedIndices = filteredFiles
+    .filter((file) => selected.has(file.index))
+    .map((file) => file.index);
 
-  function changeSelection(update: (current: Set<number>) => Set<number>) {
-    setSelected(update);
+  function updatePriorities(update: (current: Map<number, TorrentFilePriority>) => Map<number, TorrentFilePriority>) {
+    setPriorities(update);
     setDirty(true);
   }
 
-  function toggleFile(index: number) {
-    changeSelection((current) => {
-      const next = new Set(current);
-      if (next.has(index)) next.delete(index);
-      else next.add(index);
+  function setPriority(index: number, priority: TorrentFilePriority) {
+    updatePriorities((current) => {
+      const next = new Map(current);
+      next.set(index, priority);
       return next;
     });
+  }
+
+  function toggleFile(index: number) {
+    const currentPriority = priorities.get(index) ?? fileByIndex.get(index)?.priority ?? "normal";
+    setPriority(index, currentPriority === "skip" ? "normal" : "skip");
   }
 
   function toggleFolder(folder: TorrentTreeDirectory) {
     const count = selectedCounts.get(folder.id) ?? 0;
     const shouldSelect = count !== folder.totalFiles;
-    changeSelection((current) => {
-      const next = new Set(current);
+    updatePriorities((current) => {
+      const next = new Map(current);
       for (const index of folder.fileIndices) {
-        if (shouldSelect) next.add(index);
-        else next.delete(index);
+        const existing = next.get(index) ?? fileByIndex.get(index)?.priority ?? "normal";
+        next.set(index, shouldSelect ? (existing === "skip" ? "normal" : existing) : "skip");
       }
       return next;
     });
   }
 
-  async function saveSelection() {
+  function applyPriorityToIncluded(priority: TorrentFilePriority) {
+    if (visibleSelectedIndices.length === 0) return;
+    updatePriorities((current) => {
+      const next = new Map(current);
+      for (const index of visibleSelectedIndices) next.set(index, priority);
+      return next;
+    });
+  }
+
+  function setFolderPriority(folder: TorrentTreeDirectory, priority: TorrentFilePriority) {
+    updatePriorities((current) => {
+      const next = new Map(current);
+      for (const index of folder.fileIndices) next.set(index, priority);
+      return next;
+    });
+  }
+
+  async function savePriorities() {
     if (busy || !dirty || !canChange) return;
-    const succeeded = await onSave(torrent.id, [...selected].sort((left, right) => left - right));
+    const updates: TorrentFilePriorityUpdate[] = torrent.files.flatMap((file) => {
+      const priority = priorities.get(file.index) ?? file.priority;
+      return priority === file.priority ? [] : [{ index: file.index, priority }];
+    });
+    if (updates.length === 0) {
+      setDirty(false);
+      return;
+    }
+    const succeeded = await onSave(torrent.id, updates);
     if (succeeded) setDirty(false);
   }
 
@@ -131,21 +171,36 @@ export function TorrentFilesPanel({ torrent, busy, saving, onSave }: TorrentFile
   return (
     <section className="torrent-files" aria-label={`Files in ${torrent.name ?? "torrent"}`}>
       <div className="torrent-files__toolbar">
-        <div className="torrent-files__selection-actions">
+        <div className="torrent-files__selection-actions" aria-label="Bulk file priorities">
           <button
             type="button"
-            onClick={() => changeSelection(() => new Set(torrent.files.map((file) => file.index)))}
+            onClick={() => updatePriorities((current) => new Map<number, TorrentFilePriority>(torrent.files.map((file) => [
+              file.index,
+              (current.get(file.index) ?? file.priority) === "skip" ? "normal" : current.get(file.index) ?? file.priority,
+            ])))}
             disabled={!canChange || busy || selectionTotals.selectedFiles === torrent.files.length}
-          >
-            <ListChecks size={13} aria-hidden="true" /> All
-          </button>
+            aria-label="Include all files"
+            title="Include all files"
+          ><ListChecks size={13} aria-hidden="true" /> All</button>
           <button
             type="button"
-            onClick={() => changeSelection(() => new Set())}
+            onClick={() => updatePriorities(() => new Map<number, TorrentFilePriority>(torrent.files.map((file) => [file.index, "skip"])))}
             disabled={!canChange || busy || selectionTotals.selectedFiles === 0}
-          >
-            <ListX size={13} aria-hidden="true" /> None
-          </button>
+            aria-label="Skip all files"
+            title="Skip all files"
+          ><ListX size={13} aria-hidden="true" /> None</button>
+          <span className="torrent-files__action-divider" aria-hidden="true" />
+          <button type="button" onClick={() => applyPriorityToIncluded("high")} disabled={!canChange || busy || visibleSelectedIndices.length === 0} aria-label="Set High priority">High</button>
+          <button type="button" onClick={() => applyPriorityToIncluded("normal")} disabled={!canChange || busy || visibleSelectedIndices.length === 0} aria-label="Set Normal priority">Normal</button>
+          <button type="button" onClick={() => applyPriorityToIncluded("low")} disabled={!canChange || busy || visibleSelectedIndices.length === 0} aria-label="Set Low priority">Low</button>
+          <button type="button" onClick={() => applyPriorityToIncluded("skip")} disabled={!canChange || busy || visibleSelectedIndices.length === 0} aria-label="Skip included files">Skip</button>
+          <button
+            type="button"
+            onClick={() => updatePriorities(() => new Map<number, TorrentFilePriority>(torrent.files.map((file) => [file.index, "normal"])))}
+            disabled={!canChange || busy || torrent.files.every((file) => (priorities.get(file.index) ?? file.priority) === "normal")}
+            aria-label="Reset priorities to Normal"
+            title="Reset priorities to Normal"
+          >Reset</button>
         </div>
         {hasFolders && (
           <div className="torrent-files__tree-actions">
@@ -170,12 +225,13 @@ export function TorrentFilesPanel({ torrent, busy, saving, onSave }: TorrentFile
           </select>
         </label>
       </div>
+      <p className="torrent-files__priority-note">High files are requested first. Normal and Low stay eligible; Skip opts out.</p>
 
-      <div className="torrent-files__table" role="treegrid" aria-label="Torrent file selection" aria-rowcount={rows.length + 1}>
+      <div className="torrent-files__table" role="treegrid" aria-label="Torrent file priorities" aria-rowcount={rows.length + 1}>
         <div className="torrent-files__head" role="row">
           <span role="columnheader">Name</span>
           <span role="columnheader">Size</span>
-          <span role="columnheader">Selection</span>
+          <span role="columnheader">Priority</span>
           <span role="columnheader">Downloaded</span>
           <span role="columnheader">Progress</span>
           <span role="columnheader">Status</span>
@@ -202,6 +258,7 @@ export function TorrentFilesPanel({ torrent, busy, saving, onSave }: TorrentFile
                   const indeterminate = count > 0 && !checked;
                   const isExpanded = expanded.has(node.id);
                   const aggregate = aggregateFolder(node, fileByIndex);
+                  const folderPriority = aggregatePriority(node.fileIndices, priorities, fileByIndex);
                   return (
                     <div className="torrent-files__row torrent-files__row--folder" key={node.id} role="row" aria-level={level} aria-expanded={isExpanded} style={rowStyle}>
                       <span className="torrent-files__name-cell" role="gridcell">
@@ -213,7 +270,9 @@ export function TorrentFilesPanel({ torrent, busy, saving, onSave }: TorrentFile
                         <span className="torrent-files__name" title={node.name}>{node.name}</span>
                       </span>
                       <span role="gridcell">{formatExactBytes(node.totalSize)}</span>
-                      <span role="gridcell">{count} / {node.totalFiles}</span>
+                      <span role="gridcell">
+                        <PrioritySelect value={folderPriority} disabled={!canChange || busy} label={`Priority for folder ${node.name}`} onChange={(priority) => setFolderPriority(node, priority)} />
+                      </span>
                       <span role="gridcell">{formatExactBytes(aggregate.downloadedBytes)}</span>
                       <span role="gridcell">{formatPercent(aggregate.progressPercent)}</span>
                       <span role="gridcell">{count === 0 ? "Skipped" : count === node.totalFiles ? "Selected" : "Mixed"}</span>
@@ -223,17 +282,20 @@ export function TorrentFilesPanel({ torrent, busy, saving, onSave }: TorrentFile
 
                 const file = fileByIndex.get(node.file.index);
                 if (!file) return null;
-                const checked = selected.has(file.index);
+                const priority = priorities.get(file.index) ?? file.priority;
+                const checked = priority !== "skip";
                 return (
                   <div className="torrent-files__row" key={node.id} role="row" aria-level={level} aria-selected={checked} style={rowStyle}>
                     <span className="torrent-files__name-cell" role="gridcell">
-                      <input type="checkbox" checked={checked} onChange={() => toggleFile(file.index)} disabled={!canChange || busy} aria-label={`${checked ? "Skip" : "Select"} ${file.path}`} />
+                      <input type="checkbox" checked={checked} onChange={() => toggleFile(file.index)} disabled={!canChange || busy} aria-label={`${checked ? "Skip" : "Include"} ${file.path}`} />
                       <span className="torrent-files__leaf-spacer" aria-hidden="true" />
                       <File size={13} aria-hidden="true" />
                       <span className="torrent-files__name" title={file.path}>{node.name}</span>
                     </span>
                     <span role="gridcell">{formatExactBytes(file.sizeBytes)}</span>
-                    <span role="gridcell">{checked ? "Selected" : "Skipped"}</span>
+                    <span role="gridcell">
+                      <PrioritySelect value={priority} disabled={!canChange || busy} label={`Priority for ${file.path}`} onChange={(next) => setPriority(file.index, next)} />
+                    </span>
                     <span role="gridcell">{formatExactBytes(file.downloadedBytes)}</span>
                     <span role="gridcell">{formatPercent(file.progressPercent)}</span>
                     <span role="gridcell" className={`torrent-files__state torrent-files__state--${file.state}`}>{fileStateLabel(file.state)}</span>
@@ -248,21 +310,63 @@ export function TorrentFilesPanel({ torrent, busy, saving, onSave }: TorrentFile
       <div className="torrent-files__footer" aria-live="polite">
         <span><Check size={13} aria-hidden="true" /> {selectionTotals.selectedFiles.toLocaleString()} of {torrent.files.length.toLocaleString()} files</span>
         <strong>{formatExactBytes(selectionTotals.selectedBytes)} <span>/ {formatExactBytes(selectionTotals.totalBytes)}</span></strong>
-        <button type="button" className="torrent-files__save" onClick={() => void saveSelection()} disabled={!canChange || !dirty || busy || selectionTotals.selectedFiles === 0}>
-          {saving ? "Saving…" : "Save selection"}
+        <button type="button" className="torrent-files__save" onClick={() => void savePriorities()} disabled={!canChange || !dirty || busy || selectionTotals.selectedFiles === 0}>
+          {saving ? "Saving…" : "Save priorities"}
         </button>
       </div>
       {!canChange && torrent.engineAvailable && torrent.state === "error" && (
-        <p className="torrent-files__notice" role="status">Retry this torrent before changing its file selection.</p>
+        <p className="torrent-files__notice" role="status">Retry this torrent before changing file priorities.</p>
       )}
       {!canChange && torrent.engineAvailable && torrent.state !== "error" && torrent.files.length > 0 && (
-        <p className="torrent-files__notice" role="status">File selection becomes available when the torrent is active or paused.</p>
+        <p className="torrent-files__notice" role="status">File priorities can be changed when the torrent is active or paused.</p>
       )}
       {canChange && dirty && selectionTotals.selectedFiles === 0 && (
         <p className="torrent-files__notice" role="status">Select at least one file to save. Pause the torrent to stop all transfer activity.</p>
       )}
     </section>
   );
+}
+
+function PrioritySelect({
+  value,
+  disabled,
+  label,
+  onChange,
+}: {
+  value: PriorityChoice;
+  disabled: boolean;
+  label: string;
+  onChange: (priority: TorrentFilePriority) => void;
+}) {
+  return (
+    <select
+      className={`torrent-files__priority torrent-files__priority--${value}`}
+      value={value}
+      disabled={disabled}
+      aria-label={label}
+      onChange={(event) => onChange(event.target.value as TorrentFilePriority)}
+    >
+      {value === "mixed" && <option value="mixed" disabled>Mixed</option>}
+      <option value="high">High</option>
+      <option value="normal">Normal</option>
+      <option value="low">Low</option>
+      <option value="skip">Skip</option>
+    </select>
+  );
+}
+
+function aggregatePriority(
+  indices: number[],
+  priorities: Map<number, TorrentFilePriority>,
+  files: Map<number, TorrentFile>,
+): PriorityChoice {
+  let result: TorrentFilePriority | null = null;
+  for (const index of indices) {
+    const priority = priorities.get(index) ?? files.get(index)?.priority ?? "normal";
+    if (result === null) result = priority;
+    else if (result !== priority) return "mixed";
+  }
+  return result ?? "normal";
 }
 
 function sortNodes(nodes: TorrentTreeNode[], sortBy: FileSort, files: Map<number, TorrentFile>) {

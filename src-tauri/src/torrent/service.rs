@@ -23,6 +23,7 @@ use super::persistence::{
     now_millis, AppPreferences, ApplicationPersistence, TorrentCategory, TorrentCategoryEdit,
     TorrentLibraryMetadata, TorrentTag, TorrentTagEdit,
 };
+use super::priority::{ordered_file_indices, TorrentFilePriority, TorrentFilePriorityUpdate};
 
 const MAX_TORRENT_FILE_SIZE: u64 = 64 * 1024 * 1024;
 
@@ -77,6 +78,8 @@ pub enum TorrentError {
     UnsafeTorrentPath,
     #[error("Wait until the torrent is active or paused before changing its file selection.")]
     FileSelectionUnavailable,
+    #[error("The selected file priority changes do not match this torrent.")]
+    InvalidFilePriorities,
     #[error("Torrent metadata is larger than the 64 MiB limit.")]
     TorrentMetadataTooLarge,
     #[error(
@@ -248,6 +251,7 @@ pub struct TorrentFile {
     pub downloaded_bytes: String,
     pub progress_percent: f64,
     pub included: bool,
+    pub priority: TorrentFilePriority,
     pub state: TorrentFileState,
 }
 
@@ -714,6 +718,18 @@ impl TorrentService {
             status.state = TorrentState::Queued;
         }
         self.attach_library_metadata(status)?;
+        if !status.files.is_empty() {
+            if let Some(torrent) = self.session.get(TorrentIdOrHash::Id(status.id)) {
+                let priorities: Vec<_> = status.files.iter().map(|file| file.priority).collect();
+                let paths: Vec<_> = status.files.iter().map(|file| file.path.clone()).collect();
+                let order = ordered_file_indices(&priorities, &paths);
+                if torrent.file_priorities() != order {
+                    torrent
+                        .set_file_priorities(&order)
+                        .map_err(|error| TorrentError::Engine(error.to_string()))?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1426,14 +1442,12 @@ impl TorrentService {
         id: usize,
         selected_file_indices: &[usize],
     ) -> Result<TorrentStatus, TorrentError> {
-        let details = self
-            .api
-            .api_torrent_details(TorrentIdOrHash::Id(id))
-            .map_err(|error| TorrentError::Status(error.to_string()))?;
+        let _guard = self.queue_operations.lock().await;
+        let status = self.get_torrent_status(id)?;
         if selected_file_indices.is_empty() {
             return Err(TorrentError::NoFilesSelected);
         }
-        let file_count = details.files.as_ref().map_or(0, Vec::len);
+        let file_count = status.files.len();
         if file_count == 0
             || selected_file_indices.len() > file_count
             || selected_file_indices
@@ -1441,6 +1455,56 @@ impl TorrentService {
                 .any(|index| *index >= file_count)
         {
             return Err(TorrentError::InvalidFileSelection);
+        }
+        let selected: HashSet<_> = selected_file_indices.iter().copied().collect();
+        if selected.len() != selected_file_indices.len() {
+            return Err(TorrentError::InvalidFileSelection);
+        }
+        let mut priorities: Vec<_> = status.files.iter().map(|file| file.priority).collect();
+        for (index, priority) in priorities.iter_mut().enumerate() {
+            if selected.contains(&index) && *priority == TorrentFilePriority::Skip {
+                *priority = TorrentFilePriority::Normal;
+            } else if !selected.contains(&index) {
+                *priority = TorrentFilePriority::Skip;
+            }
+        }
+        self.apply_file_priorities_locked(id, &status, priorities)
+            .await
+    }
+
+    pub async fn update_torrent_file_priorities(
+        &self,
+        id: usize,
+        updates: &[TorrentFilePriorityUpdate],
+    ) -> Result<TorrentStatus, TorrentError> {
+        let _guard = self.queue_operations.lock().await;
+        let status = self.get_torrent_status(id)?;
+        let mut priorities: Vec<_> = status.files.iter().map(|file| file.priority).collect();
+        if priorities.is_empty() || updates.is_empty() {
+            return Err(TorrentError::InvalidFilePriorities);
+        }
+        let mut seen = HashSet::new();
+        for update in updates {
+            if update.index >= priorities.len() || !seen.insert(update.index) {
+                return Err(TorrentError::InvalidFilePriorities);
+            }
+            priorities[update.index] = update.priority;
+        }
+        self.apply_file_priorities_locked(id, &status, priorities)
+            .await
+    }
+
+    async fn apply_file_priorities_locked(
+        &self,
+        id: usize,
+        previous: &TorrentStatus,
+        priorities: Vec<TorrentFilePriority>,
+    ) -> Result<TorrentStatus, TorrentError> {
+        if priorities.len() != previous.files.len() {
+            return Err(TorrentError::InvalidFilePriorities);
+        }
+        if priorities.iter().all(|priority| !priority.is_selected()) {
+            return Err(TorrentError::NoFilesSelected);
         }
         let stats = self
             .api
@@ -1452,15 +1516,51 @@ impl TorrentService {
         ) {
             return Err(TorrentError::FileSelectionUnavailable);
         }
-
-        let only_files = selected_file_indices
+        let selected: HashSet<_> = priorities
             .iter()
-            .copied()
-            .collect::<HashSet<_>>();
+            .enumerate()
+            .filter_map(|(index, priority)| priority.is_selected().then_some(index))
+            .collect();
+        let old_selected: HashSet<_> = previous
+            .files
+            .iter()
+            .filter(|file| file.included)
+            .map(|file| file.index)
+            .collect();
         self.api
-            .api_torrent_action_update_only_files(TorrentIdOrHash::Id(id), &only_files)
+            .api_torrent_action_update_only_files(TorrentIdOrHash::Id(id), &selected)
             .await
             .map_err(|error| TorrentError::Engine(error.to_string()))?;
+        let paths: Vec<_> = previous
+            .files
+            .iter()
+            .map(|file| file.path.clone())
+            .collect();
+        let order = ordered_file_indices(&priorities, &paths);
+        let torrent = self
+            .session
+            .get(TorrentIdOrHash::Id(id))
+            .ok_or_else(|| TorrentError::Status("torrent is no longer available".into()))?;
+        if let Err(error) = torrent.set_file_priorities(&order) {
+            let _ = self
+                .api
+                .api_torrent_action_update_only_files(TorrentIdOrHash::Id(id), &old_selected)
+                .await;
+            return Err(TorrentError::Engine(error.to_string()));
+        }
+        if let Err(error) = self
+            .persistence
+            .set_file_priorities(&previous.info_hash, priorities.clone())
+        {
+            let old_priorities: Vec<_> = previous.files.iter().map(|file| file.priority).collect();
+            let old_order = ordered_file_indices(&old_priorities, &paths);
+            let _ = torrent.set_file_priorities(&old_order);
+            let _ = self
+                .api
+                .api_torrent_action_update_only_files(TorrentIdOrHash::Id(id), &old_selected)
+                .await;
+            return Err(TorrentError::Persistence(error));
+        }
         self.get_torrent_status(id)
     }
 
@@ -2504,6 +2604,11 @@ fn status_from_parts(
                     downloaded_bytes: downloaded_bytes.to_string(),
                     progress_percent,
                     included: file.included,
+                    priority: if file.included {
+                        TorrentFilePriority::Normal
+                    } else {
+                        TorrentFilePriority::Skip
+                    },
                     state: file_state,
                 }
             })
@@ -3403,9 +3508,33 @@ mod tests {
         assert!(!updated.files[1].included);
         assert_eq!(updated.files[0].size_bytes, "3");
         assert_eq!(updated.files[1].size_bytes, "5");
+        let prioritized = service
+            .update_torrent_file_priorities(
+                updated.id,
+                &[
+                    TorrentFilePriorityUpdate {
+                        index: 0,
+                        priority: TorrentFilePriority::High,
+                    },
+                    TorrentFilePriorityUpdate {
+                        index: 1,
+                        priority: TorrentFilePriority::Low,
+                    },
+                ],
+            )
+            .await
+            .expect("update stable file priorities");
+        assert_eq!(prioritized.files[0].priority, TorrentFilePriority::High);
+        assert_eq!(prioritized.files[1].priority, TorrentFilePriority::Low);
+        let selected_again = service
+            .update_torrent_file_selection(prioritized.id, &[1])
+            .await
+            .expect("map legacy selection changes to priorities");
+        assert_eq!(selected_again.files[0].priority, TorrentFilePriority::Skip);
+        assert_eq!(selected_again.files[1].priority, TorrentFilePriority::Low);
         assert!(matches!(
             service
-                .update_torrent_file_selection(updated.id, &[2])
+                .update_torrent_file_selection(selected_again.id, &[2])
                 .await,
             Err(TorrentError::InvalidFileSelection)
         ));
@@ -3531,6 +3660,205 @@ mod tests {
         assert_eq!(status.files[1].downloaded_bytes, "5");
         assert!(!status.files[3].included);
         assert_eq!(status.files[3].downloaded_bytes, "0");
+
+        service.api.session().stop().await;
+        seeder.stop().await;
+    }
+
+    #[tokio::test]
+    async fn high_priority_file_progresses_before_low_priority_under_bandwidth_limit() {
+        use librqbit::{create_torrent, spawn_utils::BlockingSpawner, CreateTorrentOptions};
+
+        let temp = tempfile::tempdir().expect("temporary test directory");
+        let seed_directory = temp.path().join("priority-seed");
+        let client_directory = temp.path().join("priority-client");
+        fs::create_dir_all(&seed_directory).expect("create seed root");
+        fs::create_dir_all(&client_directory).expect("create client root");
+        fs::write(seed_directory.join("a-low.bin"), vec![b'l'; 256 * 1024])
+            .expect("write low-priority payload");
+        fs::write(seed_directory.join("z-high.bin"), vec![b'h'; 256 * 1024])
+            .expect("write high-priority payload");
+        let metainfo = create_torrent(
+            &seed_directory,
+            CreateTorrentOptions {
+                piece_length: Some(16_384),
+                ..Default::default()
+            },
+            &BlockingSpawner::new(1),
+        )
+        .await
+        .expect("create controlled multi-file torrent")
+        .as_bytes()
+        .expect("encode test metainfo");
+
+        let seeder = Session::new_with_opts(
+            seed_directory.clone(),
+            SessionOptions {
+                dht: None,
+                listen: Some(librqbit::ListenerOptions {
+                    listen_addr: "127.0.0.1:0".parse().expect("ephemeral peer port"),
+                    ..Default::default()
+                }),
+                persistence: None,
+                ..SessionOptions::default()
+            },
+        )
+        .await
+        .expect("create local seeder");
+        let seed_handle = seeder
+            .add_torrent(
+                AddTorrent::from_bytes(metainfo.to_vec()),
+                Some(AddTorrentOptions {
+                    output_folder: Some(seed_directory.to_string_lossy().into_owned()),
+                    overwrite: true,
+                    ..AddTorrentOptions::default()
+                }),
+            )
+            .await
+            .expect("add torrent to seeder")
+            .into_handle()
+            .expect("get seeder handle");
+        seed_handle
+            .wait_until_initialized()
+            .await
+            .expect("initialize seeder");
+        let peer = seeder.listen_addr().expect("local peer address");
+
+        let client_session = Session::new_with_opts(
+            client_directory.clone(),
+            SessionOptions {
+                dht: None,
+                listen: None,
+                persistence: None,
+                ..SessionOptions::default()
+            },
+        )
+        .await
+        .expect("create download session");
+        let service = TorrentService::with_session(client_session, client_directory.clone())
+            .expect("create download service");
+        let mut preferences = service.preferences().expect("read preferences");
+        preferences.download_limit_bytes_per_second = Some(32 * 1024);
+        service
+            .set_preferences(preferences)
+            .await
+            .expect("constrain download bandwidth");
+        let output_id = service.default_directory_id().to_string();
+        let output_directory = service
+            .validate_output_directory(&output_id)
+            .expect("validate client output folder");
+        let preview = service
+            .inspect_source_with_options(
+                AddTorrent::from_bytes(metainfo.to_vec()),
+                AddTorrentOptions {
+                    list_only: true,
+                    output_folder: Some(output_directory.to_string_lossy().into_owned()),
+                    ..AddTorrentOptions::default()
+                },
+                TorrentSourceType::TorrentFile,
+            )
+            .await
+            .expect("inspect controlled torrent");
+        let low_index = preview
+            .files
+            .iter()
+            .find(|file| file.path.ends_with("a-low.bin"))
+            .expect("find low file index")
+            .index;
+        let high_index = preview
+            .files
+            .iter()
+            .find(|file| file.path.ends_with("z-high.bin"))
+            .expect("find high file index")
+            .index;
+        let response = service
+            .api
+            .api_add_torrent(
+                AddTorrent::from_bytes(metainfo.to_vec()),
+                Some(AddTorrentOptions {
+                    output_folder: Some(output_directory.to_string_lossy().into_owned()),
+                    only_files: Some(vec![low_index, high_index]),
+                    paused: true,
+                    initial_peers: Some(vec![peer]),
+                    ..AddTorrentOptions::default()
+                }),
+            )
+            .await
+            .expect("start controlled download");
+        let torrent_id = response.id.expect("download id");
+        let status = service
+            .get_torrent_status(torrent_id)
+            .expect("persist initial torrent state");
+        service
+            .update_torrent_file_priorities(
+                torrent_id,
+                &[
+                    TorrentFilePriorityUpdate {
+                        index: low_index,
+                        priority: TorrentFilePriority::Low,
+                    },
+                    TorrentFilePriorityUpdate {
+                        index: high_index,
+                        priority: TorrentFilePriority::High,
+                    },
+                ],
+            )
+            .await
+            .expect("apply priorities to live scheduler");
+        assert_eq!(status.files.len(), 2);
+        let engine_order = service
+            .session
+            .get(TorrentIdOrHash::Id(torrent_id))
+            .expect("torrent engine handle")
+            .file_priorities();
+        assert_eq!(engine_order, [high_index, low_index]);
+        service
+            .resume_torrent(torrent_id)
+            .await
+            .expect("start the priority-ordered transfer");
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut observed = None;
+        while tokio::time::Instant::now() < deadline {
+            let status = service
+                .get_torrent_status(torrent_id)
+                .expect("read live file progress");
+            let high = status.files[high_index]
+                .downloaded_bytes
+                .parse::<u64>()
+                .expect("high file byte count");
+            let low = status.files[low_index]
+                .downloaded_bytes
+                .parse::<u64>()
+                .expect("low file byte count");
+            if high >= 16_384 {
+                observed = Some((high, low));
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let (high, low) = observed.expect("high-priority file should receive a piece");
+        assert!(high > low, "high file has {high} bytes; low file has {low}");
+        assert_eq!(
+            low, 0,
+            "low-priority file should wait while high data is available"
+        );
+
+        let persisted = service
+            .persistence
+            .torrents()
+            .expect("read persisted downloads")
+            .into_iter()
+            .find(|record| record.info_hash == preview.info_hash)
+            .expect("saved torrent record");
+        assert_eq!(
+            persisted.file_priorities[low_index],
+            TorrentFilePriority::Low
+        );
+        assert_eq!(
+            persisted.file_priorities[high_index],
+            TorrentFilePriority::High
+        );
 
         service.api.session().stop().await;
         seeder.stop().await;

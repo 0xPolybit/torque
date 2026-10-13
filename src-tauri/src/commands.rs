@@ -10,8 +10,8 @@ use crate::discovery::{
 };
 use crate::torrent::{
     AppPreferences, DownloadDirectory, QueueMove, TorrentCategory, TorrentCategoryEdit,
-    TorrentDetails, TorrentFileSelection, TorrentLibraryMetadata, TorrentPreview, TorrentService,
-    TorrentStatus, TorrentTag, TorrentTagEdit,
+    TorrentDetails, TorrentFilePriorityUpdate, TorrentFileSelection, TorrentLibraryMetadata,
+    TorrentPreview, TorrentService, TorrentStatus, TorrentTag, TorrentTagEdit,
 };
 
 #[derive(Serialize)]
@@ -321,6 +321,18 @@ pub async fn update_torrent_file_selection(
 ) -> Result<TorrentStatus, String> {
     service
         .update_torrent_file_selection(torrent_id, &selected_file_indices)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn update_torrent_file_priorities(
+    service: State<'_, TorrentService>,
+    torrent_id: usize,
+    updates: Vec<TorrentFilePriorityUpdate>,
+) -> Result<TorrentStatus, String> {
+    service
+        .update_torrent_file_priorities(torrent_id, &updates)
         .await
         .map_err(|error| error.to_string())
 }

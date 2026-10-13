@@ -1441,6 +1441,20 @@ dialog.torrent-details::backdrop {
   gap: 4px;
 }
 
+.torrent-files__action-divider {
+  width: 1px;
+  height: 14px;
+  margin: 0 2px;
+  background: var(--color-border);
+}
+
+.torrent-files__priority-note {
+  margin: -2px 0 8px;
+  color: var(--color-subtle);
+  font-size: 8px;
+  line-height: 1.4;
+}
+
 .torrent-files__selection-actions button,
 .torrent-files__tree-actions button {
   display: inline-flex;
@@ -1524,6 +1538,36 @@ dialog.torrent-details::backdrop {
   color: var(--color-muted);
   font: inherit;
   font-size: 9px;
+}
+
+.torrent-files__priority {
+  width: 66px;
+  min-height: 23px;
+  padding: 0 3px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 5px;
+  background: var(--color-panel);
+  color: var(--color-muted);
+  font: inherit;
+  font-size: 8px;
+}
+
+.torrent-files__priority--high {
+  color: #a9d7b0;
+}
+
+.torrent-files__priority--low {
+  color: #d4c18c;
+}
+
+.torrent-files__priority--skip,
+.torrent-files__priority--mixed {
+  color: var(--color-subtle);
+}
+
+.torrent-files__priority:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
 }
 
 .torrent-files__table {

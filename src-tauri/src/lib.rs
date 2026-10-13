@@ -105,6 +105,7 @@ pub fn run() {
             commands::set_torrent_library_metadata,
             commands::get_torrent_details,
             commands::update_torrent_file_selection,
+            commands::update_torrent_file_priorities,
             commands::pause_torrent,
             commands::resume_torrent,
             commands::retry_torrent,

@@ -49,7 +49,8 @@ Torque is a cross-platform desktop BitTorrent client built with a Tauri shell, a
 - Review file-type totals, available destination space, and a neutral notice when executable or script files are present.
 - Detect torrents already in the active, paused, completed, or saved history library before starting a second session.
 - Select whole folders with selected, unselected, and indeterminate checkbox states, or choose files individually.
-- Change a torrent's file selection later from its Files tab; search large file lists and sort by name, size, or progress.
+- Set each file's priority to High, Normal, Low, or Skip before and during a download; folder changes propagate to descendants.
+- Change priorities later from a torrent's Files tab; search large file lists and sort by name, size, or progress.
 - Choose a destination folder with the native folder picker; Torque remembers it for future downloads.
 - Track progress, downloaded and total size, download and upload speeds, peers, ETA, and current state.
 - Queue downloads with saved positions, reorder waiting torrents, start the next item automatically, and cap simultaneous downloads.
@@ -172,11 +173,13 @@ Before starting, Torque groups inspected files into video, audio, archive, docum
 
 Torque checks the inspected info hash against rqbit's active session and persisted library, including paused, completed, and history entries. A match offers **View existing torrent** or **Cancel**; starting also repeats the duplicate check in Rust so the same hash cannot create a second session. Torrent file components are validated as portable relative paths, and existing symlink targets beneath the destination are checked for containment before the engine starts.
 
-### Changing file selection
+### File priorities and selection
 
-Open a torrent's **Files** tab to review every file's size, selected/skipped state, downloaded bytes, progress, and status. Use the search box and sort menu to narrow or order large lists. Folder checkboxes select or skip their files together; a partially selected folder displays an indeterminate checkbox. If a search is active, a folder checkbox acts on matching files in that folder. Press **Save selection** to apply changes. Selection edits are available after rqbit has initialized the torrent and while it is active or paused; completed sessions can also be changed when rqbit keeps them available. At least one file must remain selected; use **Pause** to stop all transfer activity. Changes are sent as validated file indexes, not paths.
+Open a torrent's **Files** tab to review each file's size, priority, downloaded bytes, progress, and status. Use the search box and sort menu to narrow or order large lists. Set priorities individually or apply High, Normal, Low, or Skip in bulk to the currently included files. Folder priority controls apply to all descendants, and display **Mixed** when children differ; folder checkboxes show selected, unselected, or indeterminate inclusion states. If a search is active, folder changes apply to matching files in that folder. **Reset** sets every file to Normal. Press **Save priorities** to apply changes. Priority edits are available after rqbit has initialized the torrent and while it is active or paused; completed sessions can also be changed when rqbit keeps them available. At least one file must remain eligible; use **Pause** to stop all transfer activity. Changes are sent as validated file indexes, not paths.
 
-File indexes come from the metainfo's ordered file list and are preserved through preview, rqbit status, live file-progress reporting, and session restoration. Torque uses librqbit's `only_files` when starting and `update_only_files` for later edits, so non-selected files are skipped except for unavoidable piece-boundary data. Selected file indexes are also stored with Torque's lightweight application state and rqbit's session snapshot.
+File indexes come from the metainfo's ordered file list and are preserved through preview, rqbit status, live file-progress reporting, and session restoration. Skip maps to librqbit's `only_files` / `update_only_files` selection, so skipped files are not intentionally downloaded except for unavoidable piece-boundary data. High, Normal, and Low files all remain eligible; their priority orders the engine's existing piece requests so higher-priority file pieces are requested first. A BitTorrent piece can overlap multiple files, so the shared piece is requested once and may make progress for each overlapping file. Priorities and selected indexes are stored in Torque's application state and restored onto the engine session after restart.
+
+Librqbit 9.0.1 contains an internal file-priority piece scheduler but has no public setter. Torque applies a small, isolated patch to the vendored 9.0.1 source to expose that existing scheduler through its managed torrent handle. The service layer validates complete file-index order and persists the user-facing priority mapping; Tauri commands and React do not depend on rqbit internals. This local patch is intended to be removed if an upstream librqbit release exposes an equivalent public API.
 
 ## Torrent details
 
@@ -258,7 +261,7 @@ The React frontend calls typed Tauri command wrappers. Tauri commands adapt nati
 
 Force recheck also stays in `TorrentService`, keeping engine-specific session manipulation out of Tauri commands and React. Because librqbit 9.0.1 exposes no public recheck API, the service uses `Session::delete(id, false)` to remove only the rqbit record and its fast-resume bitfield, then re-adds the same metainfo with the same ID, destination, file selection, and trackers in paused mode. That drives librqbit's normal initial hash validation without starting network transfer during the scan. The service persists the recheck intent and temporary metainfo sidecar before resetting the entry so startup can recover if the app closes mid-operation. After the scan, the engine's piece bitfield is authoritative and the existing queue scheduler resumes missing pieces when appropriate. An oversized-file preflight avoids librqbit's post-scan `set_len` truncation behavior for existing selected files.
 
-The nested file tree is assembled in a dedicated frontend helper and rendered as a flattened, virtualized view for both pre-download inspection and each transfer's Files tab. `TorrentFilesPanel` owns local edits, search, sort, folder tri-state, and the save action; transfer rows remain coupled to app-level torrent statuses rather than rqbit types.
+The nested file tree is assembled in a dedicated frontend helper and rendered as a flattened, virtualized view for both pre-download inspection and each transfer's Files tab. `TorrentFilesPanel` owns local edits, priority controls, search, sort, folder tri-state, and the save action; transfer rows remain coupled to app-level torrent statuses rather than rqbit types. `TorrentService` maps High/Normal/Low/Skip to a stable file-index priority vector, librqbit's `only_files` selection, and its piece scheduler order. The persisted priority vector is reapplied from application state after the engine restores a session.
 
 The compact transfer row opens `TorrentDetailsDialog` by torrent ID. Overview and Files use the queue's existing two-second `TorrentStatus` snapshots, so progress and file selection do not have a second source of truth. Opening the dialog invokes `get_torrent_details` once for the less-frequently-needed peer snapshot and metainfo fields; a manual refresh repeats only that request. The Rust service maps rqbit models into UI-neutral `TorrentDetails` and masks peer addresses before returning them. Torrent metainfo remains owned by the rqbit session.
 
@@ -283,7 +286,7 @@ src/
   features/discovery/     Browse controls, results, details, recent searches, and provider state
   features/transfers/     Add/inspection/settings/details/removal dialogs, virtual file tree, filters, and transfer rows
     torrentPreviewTree.ts Build a nested file model from inspected torrent paths
-    TorrentFilesPanel.tsx Searchable, sortable per-torrent file selection and progress
+    TorrentFilesPanel.tsx Virtualized file tree with priority, selection, and progress controls
     LibraryMetadataDialog.tsx Category/tag management and bulk assignment
   TorrentDetailsDialog.tsx Five-tab details view backed by queue snapshots and an on-demand details command
   SettingsDialog.tsx      Persisted queue, bandwidth, appearance, confirmation, and tray preferences

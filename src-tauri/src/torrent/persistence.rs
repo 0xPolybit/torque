@@ -10,6 +10,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::priority::TorrentFilePriority;
 use super::service::{TorrentSourceType, TorrentState, TorrentStatus};
 
 const STATE_VERSION: u32 = 1;
@@ -124,6 +125,8 @@ pub struct PersistedTorrent {
     pub source_type: TorrentSourceType,
     #[serde(default)]
     pub selected_file_indices: Option<Vec<usize>>,
+    #[serde(default)]
+    pub file_priorities: Vec<TorrentFilePriority>,
     #[serde(default)]
     pub is_rechecking: bool,
     #[serde(default)]
@@ -647,6 +650,28 @@ impl ApplicationPersistence {
         let key = status.info_hash.to_ascii_lowercase();
         let now = now_millis();
         let prior = state.torrents.get(&key);
+        if let Some(prior) = prior {
+            for file in &mut status.files {
+                let saved_priority = if prior.file_priorities.len() == status.files.len() {
+                    prior.file_priorities.get(file.index).copied()
+                } else {
+                    prior.selected_file_indices.as_ref().map(|selected| {
+                        if selected.contains(&file.index) {
+                            TorrentFilePriority::Normal
+                        } else {
+                            TorrentFilePriority::Skip
+                        }
+                    })
+                };
+                if let Some(priority) = saved_priority {
+                    file.priority = priority;
+                    file.included = priority.is_selected();
+                    if !file.included {
+                        file.state = super::service::TorrentFileState::Skipped;
+                    }
+                }
+            }
+        }
         let added_at = prior.map(|record| record.added_at).unwrap_or(now);
         let completed_at = if status.state == TorrentState::Completed {
             prior.and_then(|record| record.completed_at).or(Some(now))
@@ -692,6 +717,13 @@ impl ApplicationPersistence {
         } else {
             status.state
         };
+        let file_priorities = if status.files.is_empty() {
+            prior
+                .map(|record| record.file_priorities.clone())
+                .unwrap_or_default()
+        } else {
+            status.files.iter().map(|file| file.priority).collect()
+        };
         let selected_file_indices = if status.files.is_empty() {
             prior.and_then(|record| record.selected_file_indices.clone())
         } else {
@@ -699,7 +731,7 @@ impl ApplicationPersistence {
                 status
                     .files
                     .iter()
-                    .filter(|file| file.included)
+                    .filter(|file| file.priority.is_selected())
                     .map(|file| file.index)
                     .collect(),
             )
@@ -722,6 +754,7 @@ impl ApplicationPersistence {
             completed_at,
             source_type,
             selected_file_indices,
+            file_priorities,
             is_rechecking: prior.is_some_and(|record| record.is_rechecking),
             resume_after_recheck: prior.is_some_and(|record| record.resume_after_recheck),
             recheck_engine_reset: prior.is_some_and(|record| record.recheck_engine_reset),
@@ -739,6 +772,7 @@ impl ApplicationPersistence {
                 || prior.completed_at != record.completed_at
                 || prior.source_type != record.source_type
                 || prior.selected_file_indices != record.selected_file_indices
+                || prior.file_priorities != record.file_priorities
                 || prior.is_rechecking != record.is_rechecking
                 || prior.resume_after_recheck != record.resume_after_recheck
                 || prior.recheck_engine_reset != record.recheck_engine_reset
@@ -767,6 +801,41 @@ impl ApplicationPersistence {
         state.torrents.remove(&key);
         state.torrent_metadata.remove(&key);
         self.write_locked(&state)
+    }
+
+    pub fn set_file_priorities(
+        &self,
+        info_hash: &str,
+        priorities: Vec<TorrentFilePriority>,
+    ) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "state lock poisoned".to_string())?;
+        let record = state
+            .torrents
+            .get_mut(&info_hash.to_ascii_lowercase())
+            .ok_or_else(|| "torrent is not present in the saved library".to_string())?;
+        let old_selected_file_indices = record.selected_file_indices.clone();
+        let old_file_priorities = record.file_priorities.clone();
+        record.selected_file_indices = Some(
+            priorities
+                .iter()
+                .enumerate()
+                .filter_map(|(index, priority)| priority.is_selected().then_some(index))
+                .collect(),
+        );
+        record.file_priorities = priorities;
+        if let Err(error) = self.write_locked(&state) {
+            let record = state
+                .torrents
+                .get_mut(&info_hash.to_ascii_lowercase())
+                .expect("record remains in state");
+            record.selected_file_indices = old_selected_file_indices;
+            record.file_priorities = old_file_priorities;
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub fn update_source_type(

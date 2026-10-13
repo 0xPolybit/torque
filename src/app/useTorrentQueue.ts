@@ -29,7 +29,7 @@ import {
   selectTorrentFile as selectNativeTorrentFile,
   setAppPreferences,
   setWindowTheme,
-  updateTorrentFileSelection as updateDesktopTorrentFileSelection,
+  updateTorrentFilePriorities as updateDesktopTorrentFilePriorities,
   startInspectedTorrent as startDesktopInspectedTorrent,
   type AppPreferences,
   type TorrentActionState,
@@ -42,6 +42,7 @@ import {
   type TorrentLibraryMetadata,
   type TorrentCategoryEdit,
   type TorrentTagEdit,
+  type TorrentFilePriorityUpdate,
 } from "../lib/desktop";
 
 const LAST_DOWNLOAD_DIRECTORY_KEY = "torque:last-download-directory-id";
@@ -401,7 +402,7 @@ export function useTorrentQueue(enabled: boolean) {
           "cancel-recheck": "Integrity check ended. Your downloaded files were left unchanged.",
           remove: "Torrent removed from Torque.",
           "move-queue": "Queue order updated.",
-          "update-files": "File selection updated.",
+          "update-files": "File priorities updated.",
         };
         if (successMessages[action]) {
           setToast({ id: Date.now(), message: successMessages[action]! });
@@ -474,9 +475,9 @@ export function useTorrentQueue(enabled: boolean) {
       runTorrentAction(torrentId, "open-folder", () => openDesktopTorrentFolder(torrentId)), [runTorrentAction]),
     moveTorrent: useCallback((torrentId: number, movement: QueueMove) =>
       runTorrentAction(torrentId, "move-queue", () => moveDesktopQueuedTorrent(torrentId, movement)), [runTorrentAction]),
-    updateTorrentFileSelection: useCallback((torrentId: number, selectedFileIndices: number[]) =>
+    updateTorrentFilePriorities: useCallback((torrentId: number, updates: TorrentFilePriorityUpdate[]) =>
       runTorrentAction(torrentId, "update-files", () =>
-        updateDesktopTorrentFileSelection(torrentId, selectedFileIndices),
+        updateDesktopTorrentFilePriorities(torrentId, updates),
       ), [runTorrentAction]),
     inspectMagnet: (link: string) =>
       inspect(() => inspectDesktopMagnet(link, selectedDirectoryId)),

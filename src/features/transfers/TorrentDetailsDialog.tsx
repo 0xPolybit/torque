@@ -11,7 +11,7 @@ import {
   RefreshCw,
   X,
 } from "lucide-react";
-import { describeError, getTorrentDetails, type TorrentActionState, type TorrentDetails, type TorrentStatus } from "../../lib/desktop";
+import { describeError, getTorrentDetails, type TorrentActionState, type TorrentDetails, type TorrentFilePriorityUpdate, type TorrentStatus } from "../../lib/desktop";
 import { TorrentStateBadge } from "./TorrentStateBadge";
 import { TorrentFilesPanel } from "./TorrentFilesPanel";
 import { estimateTimeRemaining, formatBytes, formatExactBytes, formatSpeed } from "./torrentPresentation";
@@ -30,14 +30,14 @@ interface TorrentDetailsDialogProps {
   torrent: TorrentStatus;
   action: TorrentActionState;
   onClose: () => void;
-  onUpdateFileSelection: (torrentId: number, selectedIndices: number[]) => Promise<boolean>;
+  onUpdateFilePriorities: (torrentId: number, updates: TorrentFilePriorityUpdate[]) => Promise<boolean>;
 }
 
 export function TorrentDetailsDialog({
   torrent,
   action,
   onClose,
-  onUpdateFileSelection,
+  onUpdateFilePriorities,
 }: TorrentDetailsDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -176,6 +176,11 @@ export function TorrentDetailsDialog({
             <button type="button" onClick={() => setDetailsRevision((revision) => revision + 1)}>Try again</button>
           </div>
         )}
+        {action.error && (
+          <div className="torrent-details__error" role="alert">
+            <span>{action.error}</span>
+          </div>
+        )}
         <section
           className="torrent-details__panel"
           id="torrent-details-panel-overview"
@@ -218,7 +223,7 @@ export function TorrentDetailsDialog({
               torrent={torrent}
               busy={action.pending !== null}
               saving={action.pending === "update-files"}
-              onSave={onUpdateFileSelection}
+              onSave={onUpdateFilePriorities}
             />
           ) : (
             <UnavailableMessage>File details are unavailable for this saved torrent.</UnavailableMessage>

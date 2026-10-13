@@ -32,5 +32,9 @@ tokio-util = "0.7"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 
+[patch.crates-io]
+# librqbit 9.0.1 has file-priority scheduling internally but no public setter.
+librqbit = { path = "vendor/librqbit" }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
