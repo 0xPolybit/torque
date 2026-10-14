@@ -3,7 +3,7 @@
   <h1>Torque</h1>
   <p>A modern desktop app for managing BitTorrent downloads.</p>
   <p>
-    <a href="https://github.com/0xPolybit/torque/releases"><img alt="Version 0.1.0" src="https://img.shields.io/badge/version-0.1.0-8bcf6a?style=flat-square" /></a>
+    <a href="https://github.com/0xPolybit/torque/releases"><img alt="Version 0.2.1" src="https://img.shields.io/badge/version-0.2.1-8bcf6a?style=flat-square" /></a>
     <a href="https://v2.tauri.app/"><img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white&style=flat-square" /></a>
     <a href="https://react.dev/"><img alt="React 19" src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black&style=flat-square" /></a>
     <a href="https://www.rust-lang.org/"><img alt="Rust 1.90 or newer" src="https://img.shields.io/badge/Rust-1.90%2B-orange?logo=rust&logoColor=white&style=flat-square" /></a>
@@ -153,8 +153,8 @@ pnpm tauri:build
 
 The Windows build creates these outputs (the version and architecture in installer filenames change with the build):
 
-- NSIS installer: `src-tauri\target\release\bundle\nsis\Torque_0.1.0_x64-setup.exe`
-- MSI installer: `src-tauri\target\release\bundle\msi\Torque_0.1.0_x64_en-US.msi`
+- NSIS installer: `src-tauri\target\release\bundle\nsis\Torque_0.2.1_x64-setup.exe`
+- MSI installer: `src-tauri\target\release\bundle\msi\Torque_0.2.1_x64_en-US.msi`
 - Standalone application binary: `src-tauri\target\release\torque.exe`
 
 Use the NSIS `.exe` installer when sharing the app with Windows users. The standalone executable is useful for local testing; distribute the installer for a normal installation experience.
