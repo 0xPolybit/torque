@@ -661,8 +661,9 @@ impl ApplicationPersistence {
         status.upload_limit_bytes_per_second =
             prior.and_then(|record| record.upload_limit_bytes_per_second);
         if let Some(prior) = prior {
+            let file_count = status.files.len();
             for file in &mut status.files {
-                let saved_priority = if prior.file_priorities.len() == status.files.len() {
+                let saved_priority = if prior.file_priorities.len() == file_count {
                     prior.file_priorities.get(file.index).copied()
                 } else {
                     prior.selected_file_indices.as_ref().map(|selected| {
