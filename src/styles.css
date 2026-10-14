@@ -4417,6 +4417,98 @@ dialog.torrent-details::backdrop {
   color: var(--color-muted);
 }
 
+.torrent-limit-menu {
+  border-bottom: 1px solid var(--color-border-soft);
+  padding-bottom: 4px;
+  margin-bottom: 3px;
+}
+
+.torrent-row__menu .torrent-limit-menu > button {
+  width: 100%;
+  align-items: center;
+}
+
+.torrent-row__menu .torrent-limit-menu > button > span {
+  flex: 1;
+}
+
+.torrent-row__menu .torrent-limit-menu .torrent-limit-menu__chevron {
+  margin: 0 0 0 auto;
+  color: var(--color-muted);
+}
+
+.torrent-limit-menu__options {
+  display: grid;
+  padding: 2px 0 2px 20px;
+}
+
+.torrent-row__menu .torrent-limit-menu__options button {
+  width: 100%;
+  min-height: 25px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 7px;
+  color: var(--color-muted);
+  font-size: 10px;
+}
+
+.torrent-row__menu .torrent-limit-menu__options button:hover,
+.torrent-row__menu .torrent-limit-menu__options button[aria-checked="true"] {
+  color: var(--color-text);
+}
+
+.torrent-row__menu .torrent-limit-menu__options button > span {
+  display: inline;
+}
+
+.torrent-limit-menu__custom {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 66px auto;
+  gap: 5px;
+  padding: 5px 6px 6px;
+}
+
+.torrent-limit-menu__custom input,
+.torrent-limit-menu__custom select {
+  min-width: 0;
+  height: 27px;
+  padding: 0 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  background: var(--color-control);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 10px;
+}
+
+.torrent-row__menu .torrent-limit-menu__custom button {
+  justify-content: center;
+  padding: 5px 7px;
+  background: var(--color-accent);
+  color: #101610;
+  font-size: 10px;
+}
+
+.torrent-limit-menu__error {
+  grid-column: 1 / -1;
+  padding: 0 2px;
+  color: var(--color-danger);
+  font-size: 9px;
+}
+
+.torrent-row__limit-indicator {
+  display: inline-flex;
+  min-height: 22px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 30%, var(--color-border));
+  border-radius: 999px;
+  color: var(--color-accent);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
 .global-status-bar {
   display: flex;
   min-height: 31px;

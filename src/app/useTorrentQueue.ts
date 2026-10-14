@@ -28,11 +28,13 @@ import {
   selectDownloadDirectory,
   selectTorrentFile as selectNativeTorrentFile,
   setAppPreferences,
+  setTorrentBandwidthLimit as setDesktopTorrentBandwidthLimit,
   setWindowTheme,
   updateTorrentFilePriorities as updateDesktopTorrentFilePriorities,
   startInspectedTorrent as startDesktopInspectedTorrent,
   type AppPreferences,
   type TorrentActionState,
+  type TorrentBandwidthDirection,
   type TorrentControlAction,
   type DownloadDirectory,
   type TorrentFileSelection,
@@ -83,6 +85,8 @@ function sameTorrentStatus(left: TorrentStatus, right: TorrentStatus): boolean {
     && left.engineAvailable === right.engineAvailable
     && left.fileSelectionEditable === right.fileSelectionEditable
     && left.queuePosition === right.queuePosition
+    && left.downloadLimitBytesPerSecond === right.downloadLimitBytesPerSecond
+    && left.uploadLimitBytesPerSecond === right.uploadLimitBytesPerSecond
     && left.isSeeding === right.isSeeding
     && left.category?.id === right.category?.id
     && left.category?.name === right.category?.name
@@ -403,6 +407,7 @@ export function useTorrentQueue(enabled: boolean) {
           remove: "Torrent removed from Torque.",
           "move-queue": "Queue order updated.",
           "update-files": "File priorities updated.",
+          "set-limit": "Torrent bandwidth limit updated.",
         };
         if (successMessages[action]) {
           setToast({ id: Date.now(), message: successMessages[action]! });
@@ -479,6 +484,13 @@ export function useTorrentQueue(enabled: boolean) {
       runTorrentAction(torrentId, "update-files", () =>
         updateDesktopTorrentFilePriorities(torrentId, updates),
       ), [runTorrentAction]),
+    setTorrentBandwidthLimit: useCallback((
+      torrentId: number,
+      direction: TorrentBandwidthDirection,
+      limitBytesPerSecond: number | null,
+    ) => runTorrentAction(torrentId, "set-limit", () =>
+      setDesktopTorrentBandwidthLimit(torrentId, direction, limitBytesPerSecond),
+    ), [runTorrentAction]),
     inspectMagnet: (link: string) =>
       inspect(() => inspectDesktopMagnet(link, selectedDirectoryId)),
     inspectTorrentUrl: (url: string) =>

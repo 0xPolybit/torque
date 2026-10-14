@@ -8,6 +8,6 @@ pub use persistence::{
 };
 pub use priority::{TorrentFilePriority, TorrentFilePriorityUpdate};
 pub use service::{
-    DownloadDirectory, QueueMove, TorrentDetails, TorrentFileSelection, TorrentPreview,
-    TorrentService, TorrentStatus,
+    DownloadDirectory, QueueMove, TorrentBandwidthDirection, TorrentDetails, TorrentFileSelection,
+    TorrentPreview, TorrentService, TorrentStatus,
 };

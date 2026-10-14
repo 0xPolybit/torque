@@ -33,7 +33,7 @@ url = "2"
 uuid = { version = "1", features = ["v4"] }
 
 [patch.crates-io]
-# librqbit 9.0.1 has file-priority scheduling internally but no public setter.
+# librqbit 9.0.1 has useful internal scheduling and torrent limiter hooks without public runtime setters.
 librqbit = { path = "vendor/librqbit" }
 
 [dev-dependencies]

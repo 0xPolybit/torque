@@ -40,7 +40,7 @@ use tracing::warn;
 use crate::Session;
 use crate::chunk_tracker::ChunkTracker;
 use crate::file_info::FileInfo;
-use crate::limits::LimitsConfig;
+use crate::limits::{Limits, LimitsConfig};
 use crate::session::TorrentId;
 use crate::spawn_utils::BlockingSpawner;
 use crate::storage::BoxStorageFactory;
@@ -116,7 +116,6 @@ pub(crate) struct ManagedTorrentOptions {
     pub peer_read_write_timeout: Option<Duration>,
     pub allow_overwrite: bool,
     pub output_folder: PathBuf,
-    pub ratelimits: LimitsConfig,
     pub initial_peers: Vec<SocketAddr>,
     pub peer_limit: Option<usize>,
     #[cfg(feature = "disable-upload")]
@@ -188,6 +187,8 @@ pub struct ManagedTorrentShared {
     pub peer_id: Id20,
     pub span: tracing::Span,
     pub(crate) options: ManagedTorrentOptions,
+    /// Mutable torrent-scoped limits shared by paused and live states.
+    pub(crate) ratelimits: Arc<Limits>,
     pub(crate) connector: Arc<StreamConnector>,
     pub(crate) storage_factory: BoxStorageFactory,
     pub(crate) session: Weak<Session>,
@@ -287,6 +288,23 @@ impl ManagedTorrent {
             live.update_file_priorities(priorities);
         }
         Ok(())
+    }
+
+    /// Updates this torrent's runtime bandwidth limits without restarting it.
+    /// The session-wide limiter remains an independent aggregate cap.
+    pub fn set_ratelimits(&self, config: LimitsConfig) {
+        let current = self.shared.ratelimits.get_config();
+        if current.download_bps != config.download_bps {
+            self.shared.ratelimits.set_download_bps(config.download_bps);
+        }
+        if current.upload_bps != config.upload_bps {
+            self.shared.ratelimits.set_upload_bps(config.upload_bps);
+        }
+    }
+
+    /// Returns the current torrent-scoped bandwidth limits.
+    pub fn ratelimits(&self) -> LimitsConfig {
+        self.shared.ratelimits.get_config()
     }
 
     pub fn with_state<R>(&self, f: impl FnOnce(&ManagedTorrentState) -> R) -> R {

@@ -128,6 +128,10 @@ pub struct PersistedTorrent {
     #[serde(default)]
     pub file_priorities: Vec<TorrentFilePriority>,
     #[serde(default)]
+    pub download_limit_bytes_per_second: Option<u64>,
+    #[serde(default)]
+    pub upload_limit_bytes_per_second: Option<u64>,
+    #[serde(default)]
     pub is_rechecking: bool,
     #[serde(default)]
     pub resume_after_recheck: bool,
@@ -190,6 +194,8 @@ impl PersistedTorrent {
             is_seeding: false,
             category: None,
             tags: Vec::new(),
+            download_limit_bytes_per_second: self.download_limit_bytes_per_second,
+            upload_limit_bytes_per_second: self.upload_limit_bytes_per_second,
         }
     }
 }
@@ -650,6 +656,10 @@ impl ApplicationPersistence {
         let key = status.info_hash.to_ascii_lowercase();
         let now = now_millis();
         let prior = state.torrents.get(&key);
+        status.download_limit_bytes_per_second =
+            prior.and_then(|record| record.download_limit_bytes_per_second);
+        status.upload_limit_bytes_per_second =
+            prior.and_then(|record| record.upload_limit_bytes_per_second);
         if let Some(prior) = prior {
             for file in &mut status.files {
                 let saved_priority = if prior.file_priorities.len() == status.files.len() {
@@ -755,6 +765,8 @@ impl ApplicationPersistence {
             source_type,
             selected_file_indices,
             file_priorities,
+            download_limit_bytes_per_second: status.download_limit_bytes_per_second,
+            upload_limit_bytes_per_second: status.upload_limit_bytes_per_second,
             is_rechecking: prior.is_some_and(|record| record.is_rechecking),
             resume_after_recheck: prior.is_some_and(|record| record.resume_after_recheck),
             recheck_engine_reset: prior.is_some_and(|record| record.recheck_engine_reset),
@@ -773,6 +785,8 @@ impl ApplicationPersistence {
                 || prior.source_type != record.source_type
                 || prior.selected_file_indices != record.selected_file_indices
                 || prior.file_priorities != record.file_priorities
+                || prior.download_limit_bytes_per_second != record.download_limit_bytes_per_second
+                || prior.upload_limit_bytes_per_second != record.upload_limit_bytes_per_second
                 || prior.is_rechecking != record.is_rechecking
                 || prior.resume_after_recheck != record.resume_after_recheck
                 || prior.recheck_engine_reset != record.recheck_engine_reset
@@ -836,6 +850,59 @@ impl ApplicationPersistence {
             return Err(error);
         }
         Ok(())
+    }
+
+    pub fn set_torrent_bandwidth_limits(
+        &self,
+        info_hash: &str,
+        download_limit_bytes_per_second: Option<u64>,
+        upload_limit_bytes_per_second: Option<u64>,
+    ) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "state lock poisoned".to_string())?;
+        let record = state
+            .torrents
+            .get_mut(&info_hash.to_ascii_lowercase())
+            .ok_or_else(|| "torrent is not present in the saved library".to_string())?;
+        let previous = (
+            record.download_limit_bytes_per_second,
+            record.upload_limit_bytes_per_second,
+        );
+        record.download_limit_bytes_per_second = download_limit_bytes_per_second;
+        record.upload_limit_bytes_per_second = upload_limit_bytes_per_second;
+        if let Err(error) = self.write_locked(&state) {
+            let record = state
+                .torrents
+                .get_mut(&info_hash.to_ascii_lowercase())
+                .expect("record remains in state");
+            record.download_limit_bytes_per_second = previous.0;
+            record.upload_limit_bytes_per_second = previous.1;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub fn torrent_bandwidth_limits(
+        &self,
+        info_hash: &str,
+    ) -> Result<(Option<u64>, Option<u64>), String> {
+        self.state
+            .lock()
+            .map(|state| {
+                state
+                    .torrents
+                    .get(&info_hash.to_ascii_lowercase())
+                    .map(|record| {
+                        (
+                            record.download_limit_bytes_per_second,
+                            record.upload_limit_bytes_per_second,
+                        )
+                    })
+                    .unwrap_or((None, None))
+            })
+            .map_err(|_| "state lock poisoned".to_string())
     }
 
     pub fn update_source_type(
@@ -1053,6 +1120,65 @@ mod tests {
         let (order, waiting) = restored.queue_state().expect("restore queue");
         assert_eq!(order, ["active-hash", "queued-b", "queued-a"]);
         assert_eq!(waiting, ["queued-b", "queued-a"]);
+    }
+
+    #[test]
+    fn per_torrent_bandwidth_limits_survive_reopen_and_can_be_cleared() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let path = temp.path().join("application-state.json");
+        let info_hash = "a1b2c3";
+        let persistence = ApplicationPersistence::open(&path);
+        {
+            let mut state = persistence.state.lock().expect("lock app state");
+            state.torrents.insert(
+                info_hash.to_string(),
+                PersistedTorrent {
+                    id: 12,
+                    info_hash: info_hash.to_string(),
+                    name: Some("Test torrent".into()),
+                    total_pieces: 3,
+                    output_path: temp.path().join("downloads"),
+                    last_state: TorrentState::Paused,
+                    last_error: None,
+                    progress_percent: 0.0,
+                    downloaded_bytes: 0,
+                    total_bytes: 128,
+                    added_at: 1,
+                    completed_at: None,
+                    source_type: TorrentSourceType::TorrentFile,
+                    selected_file_indices: None,
+                    file_priorities: Vec::new(),
+                    download_limit_bytes_per_second: None,
+                    upload_limit_bytes_per_second: None,
+                    is_rechecking: false,
+                    resume_after_recheck: false,
+                    recheck_engine_reset: false,
+                    recheck_trackers: Vec::new(),
+                },
+            );
+            persistence.write_locked(&state).expect("write test record");
+        }
+        persistence
+            .set_torrent_bandwidth_limits(info_hash, Some(2 * 1024 * 1024), Some(256 * 1024))
+            .expect("save torrent limits");
+        drop(persistence);
+
+        let restored = ApplicationPersistence::open(&path);
+        assert_eq!(
+            restored
+                .torrent_bandwidth_limits(info_hash)
+                .expect("read restored limits"),
+            (Some(2 * 1024 * 1024), Some(256 * 1024))
+        );
+        restored
+            .set_torrent_bandwidth_limits(info_hash, None, None)
+            .expect("clear limits");
+        assert_eq!(
+            restored
+                .torrent_bandwidth_limits(info_hash)
+                .expect("read cleared limits"),
+            (None, None)
+        );
     }
 
     #[test]

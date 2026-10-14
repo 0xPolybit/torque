@@ -12,6 +12,7 @@ import {
   FileX2,
   FolderDown,
   FolderOpen,
+  Gauge,
   LoaderCircle,
   MoreHorizontal,
   Pause,
@@ -22,8 +23,9 @@ import {
   Users,
   X,
 } from "lucide-react";
-import type { QueueMove, TorrentControlAction, TorrentStatus } from "../../lib/desktop";
+import type { QueueMove, TorrentBandwidthDirection, TorrentControlAction, TorrentStatus } from "../../lib/desktop";
 import { TorrentStateBadge } from "./TorrentStateBadge";
+import { TorrentLimitMenu } from "./TorrentLimitMenu";
 import {
   estimateTimeRemaining,
   formatBytes,
@@ -44,6 +46,7 @@ interface TorrentRowProps {
   onOpenFolder: (torrentId: number) => Promise<boolean>;
   onOpenDetails: (torrentId: number) => void;
   onMove: (torrentId: number, movement: QueueMove) => Promise<boolean>;
+  onSetBandwidthLimit: (torrentId: number, direction: TorrentBandwidthDirection, value: number | null) => Promise<boolean>;
   selected: boolean;
   onSelect: (torrentId: number) => void;
   bulkSelectionMode: boolean;
@@ -64,6 +67,7 @@ function TorrentRowComponent({
   onOpenFolder,
   onOpenDetails,
   onMove,
+  onSetBandwidthLimit,
   selected,
   onSelect,
   bulkSelectionMode,
@@ -180,6 +184,16 @@ function TorrentRowComponent({
             </div>
           )}
           <TorrentStateBadge torrent={torrent} />
+          {(torrent.downloadLimitBytesPerSecond !== null || torrent.uploadLimitBytesPerSecond !== null) && (
+            <span
+              className="torrent-row__limit-indicator"
+              title={`Custom limits · ↓ ${torrent.downloadLimitBytesPerSecond === null ? "Unlimited" : formatSpeed(torrent.downloadLimitBytesPerSecond)} · ↑ ${torrent.uploadLimitBytesPerSecond === null ? "Unlimited" : formatSpeed(torrent.uploadLimitBytesPerSecond)}`}
+              aria-label="Custom torrent bandwidth limits are set"
+            >
+              <Gauge size={12} aria-hidden="true" />
+              <span>Limits</span>
+            </span>
+          )}
           {primaryAction && (
             <button
               className={`torrent-row__action torrent-row__action--${primaryAction.kind}`}
@@ -211,6 +225,20 @@ function TorrentRowComponent({
             </button>
             {actionsOpen && (
               <div className="torrent-row__menu" role="menu" aria-label="Torrent actions">
+                <TorrentLimitMenu
+                  direction="download"
+                  torrentId={torrent.id}
+                  value={torrent.downloadLimitBytesPerSecond}
+                  disabled={actionBusy}
+                  onSetLimit={onSetBandwidthLimit}
+                />
+                <TorrentLimitMenu
+                  direction="upload"
+                  torrentId={torrent.id}
+                  value={torrent.uploadLimitBytesPerSecond}
+                  disabled={actionBusy}
+                  onSetLimit={onSetBandwidthLimit}
+                />
                 {isChecking ? (
                   <button type="button" role="menuitem" disabled={actionBusy} onClick={() => { setActionsOpen(false); void onCancelRecheck(torrent.id); }}>
                     <X size={13} aria-hidden="true" />
@@ -314,6 +342,8 @@ function sameVisibleStatus(left: TorrentStatus, right: TorrentStatus): boolean {
     && left.uploadSpeedBytesPerSecond === right.uploadSpeedBytesPerSecond
     && left.connectedPeers === right.connectedPeers
     && left.queuePosition === right.queuePosition
+    && left.downloadLimitBytesPerSecond === right.downloadLimitBytesPerSecond
+    && left.uploadLimitBytesPerSecond === right.uploadLimitBytesPerSecond
     && left.engineAvailable === right.engineAvailable
     && left.isSeeding === right.isSeeding
     && left.category?.id === right.category?.id
@@ -338,6 +368,7 @@ export const TorrentRow = memo(TorrentRowComponent, (previous, next) =>
   && previous.onOpenFolder === next.onOpenFolder
   && previous.onOpenDetails === next.onOpenDetails
   && previous.onMove === next.onMove
+  && previous.onSetBandwidthLimit === next.onSetBandwidthLimit
   && previous.onSelect === next.onSelect
   && previous.onToggleBulkSelection === next.onToggleBulkSelection,
 );

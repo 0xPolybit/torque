@@ -118,7 +118,8 @@ export interface TorrentFile {
 
 export type TorrentState = "queued" | "downloading" | "checking" | "paused" | "completed" | "error";
 export type TorrentSourceType = "magnet" | "torrent_file" | "torrent_url" | "unknown";
-export type TorrentControlAction = "pause" | "resume" | "retry" | "force-recheck" | "cancel-recheck" | "remove" | "open-folder" | "update-files" | "move-queue";
+export type TorrentControlAction = "pause" | "resume" | "retry" | "force-recheck" | "cancel-recheck" | "remove" | "open-folder" | "update-files" | "move-queue" | "set-limit";
+export type TorrentBandwidthDirection = "download" | "upload";
 export type QueueMove = "up" | "down" | "top" | "bottom";
 
 export interface TorrentPeerStatus {
@@ -167,6 +168,8 @@ export interface TorrentStatus {
   engineAvailable: boolean;
   fileSelectionEditable: boolean;
   queuePosition: number | null;
+  downloadLimitBytesPerSecond: number | null;
+  uploadLimitBytesPerSecond: number | null;
   isSeeding: boolean;
   category: TorrentCategory | null;
   tags: TorrentTag[];
@@ -267,6 +270,18 @@ export function updateTorrentFilePriorities(
   updates: TorrentFilePriorityUpdate[],
 ): Promise<TorrentStatus> {
   return invoke<TorrentStatus>("update_torrent_file_priorities", { torrentId, updates });
+}
+
+export function setTorrentBandwidthLimit(
+  torrentId: number,
+  direction: TorrentBandwidthDirection,
+  limitBytesPerSecond: number | null,
+): Promise<TorrentStatus> {
+  return invoke<TorrentStatus>("set_torrent_bandwidth_limit", {
+    torrentId,
+    direction,
+    limitBytesPerSecond,
+  });
 }
 
 export function pauseTorrent(torrentId: number): Promise<TorrentStatus> {

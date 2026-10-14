@@ -314,6 +314,7 @@ export default function App() {
                 onOpenFolder={queue.openTorrentFolder}
                 onOpenDetails={openTorrentDetails}
                 onMove={queue.moveTorrent}
+                onSetBandwidthLimit={queue.setTorrentBandwidthLimit}
                 selectedTorrentId={selectedTorrentId}
                 onSelectTorrent={setSelectedTorrentId}
               />
@@ -374,6 +375,7 @@ export default function App() {
                   onOpenFolder={queue.openTorrentFolder}
                   onOpenDetails={openTorrentDetails}
                   onMove={queue.moveTorrent}
+                  onSetBandwidthLimit={queue.setTorrentBandwidthLimit}
                   selectedTorrentId={selectedTorrentId}
                   onSelectTorrent={setSelectedTorrentId}
                   bulkSelectionMode={bulkSelectionMode}

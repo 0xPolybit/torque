@@ -218,7 +218,7 @@ export function SettingsDialog({
         <h3 id="settings-bandwidth-heading">Bandwidth</h3>
         <RateLimitSetting label="Download" icon="download" value={preferences.downloadLimitBytesPerSecond} disabled={savingPreference} onChange={(value) => onPreferencesChange({ downloadLimitBytesPerSecond: value })} />
         <RateLimitSetting label="Upload" icon="upload" value={preferences.uploadLimitBytesPerSecond} disabled={savingPreference} onChange={(value) => onPreferencesChange({ uploadLimitBytesPerSecond: value })} />
-        <p className="settings-section__note">Limits use librqbit’s session-wide rate limiter and apply to all torrents together.</p>
+        <p className="settings-section__note">Global limits cap all torrents together. Per-torrent limits can tighten an individual transfer; the stricter cap governs its speed.</p>
       </section>
 
       {error && <p className="settings-dialog__error" role="alert">{error}</p>}

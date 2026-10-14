@@ -1,4 +1,4 @@
-import type { QueueMove, TorrentActionState, TorrentStatus } from "../../lib/desktop";
+import type { QueueMove, TorrentActionState, TorrentBandwidthDirection, TorrentStatus } from "../../lib/desktop";
 import { TorrentRow } from "./TorrentRow";
 
 interface TorrentListProps {
@@ -13,6 +13,7 @@ interface TorrentListProps {
   onOpenFolder: (torrentId: number) => Promise<boolean>;
   onOpenDetails: (torrentId: number) => void;
   onMove: (torrentId: number, movement: QueueMove) => Promise<boolean>;
+  onSetBandwidthLimit: (torrentId: number, direction: TorrentBandwidthDirection, value: number | null) => Promise<boolean>;
   selectedTorrentId: number | null;
   onSelectTorrent: (torrentId: number) => void;
   bulkSelectionMode?: boolean;
@@ -32,6 +33,7 @@ export function TorrentList({
   onOpenFolder,
   onOpenDetails,
   onMove,
+  onSetBandwidthLimit,
   selectedTorrentId,
   onSelectTorrent,
   bulkSelectionMode = false,
@@ -56,6 +58,7 @@ export function TorrentList({
             onOpenFolder={onOpenFolder}
             onOpenDetails={onOpenDetails}
             onMove={onMove}
+            onSetBandwidthLimit={onSetBandwidthLimit}
             selected={selectedTorrentId === torrent.id}
             onSelect={onSelectTorrent}
             bulkSelectionMode={bulkSelectionMode}

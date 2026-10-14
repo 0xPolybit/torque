@@ -106,6 +106,7 @@ pub fn run() {
             commands::get_torrent_details,
             commands::update_torrent_file_selection,
             commands::update_torrent_file_priorities,
+            commands::set_torrent_bandwidth_limit,
             commands::pause_torrent,
             commands::resume_torrent,
             commands::retry_torrent,

@@ -10,6 +10,7 @@ use std::{
 use bytes::Bytes;
 use librqbit::{
     api::{ApiTorrentListOpts, TorrentIdOrHash},
+    limits::LimitsConfig,
     AddTorrent, AddTorrentOptions, Api, Magnet, Session, SessionOptions, SessionPersistenceConfig,
     TorrentStats, TorrentStatsState,
 };
@@ -267,6 +268,13 @@ pub enum TorrentFileState {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TorrentBandwidthDirection {
+    Download,
+    Upload,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TorrentStatus {
@@ -290,6 +298,10 @@ pub struct TorrentStatus {
     pub engine_available: bool,
     pub file_selection_editable: bool,
     pub queue_position: Option<usize>,
+    #[serde(default)]
+    pub download_limit_bytes_per_second: Option<u64>,
+    #[serde(default)]
+    pub upload_limit_bytes_per_second: Option<u64>,
     #[serde(default)]
     pub is_seeding: bool,
     #[serde(default)]
@@ -318,6 +330,7 @@ pub struct TorrentService {
     missing_torrent_ids: Mutex<HashMap<usize, String>>,
     queue: Mutex<QueueState>,
     queue_operations: AsyncMutex<()>,
+    bandwidth_operations: AsyncMutex<()>,
 }
 
 impl TorrentService {
@@ -404,6 +417,7 @@ impl TorrentService {
                 waiting: queued_info_hashes,
             }),
             queue_operations: AsyncMutex::new(()),
+            bandwidth_operations: AsyncMutex::new(()),
         };
 
         service.apply_rate_limits()?;
@@ -487,22 +501,15 @@ impl TorrentService {
 
     fn apply_rate_limits(&self) -> Result<(), TorrentError> {
         let preferences = self.preferences()?;
-        let to_engine_limit = |limit: Option<u64>| -> Result<Option<NonZeroU32>, TorrentError> {
-            limit
-                .map(|bytes| {
-                    u32::try_from(bytes)
-                        .ok()
-                        .and_then(NonZeroU32::new)
-                        .ok_or(TorrentError::InvalidBandwidthLimit)
-                })
-                .transpose()
-        };
-        self.session.ratelimits.set_download_bps(to_engine_limit(
-            preferences.download_limit_bytes_per_second,
-        )?);
-        self.session
-            .ratelimits
-            .set_upload_bps(to_engine_limit(preferences.upload_limit_bytes_per_second)?);
+        let current = self.session.ratelimits.get_config();
+        let download = to_engine_rate_limit(preferences.download_limit_bytes_per_second)?;
+        let upload = to_engine_rate_limit(preferences.upload_limit_bytes_per_second)?;
+        if current.download_bps != download {
+            self.session.ratelimits.set_download_bps(download);
+        }
+        if current.upload_bps != upload {
+            self.session.ratelimits.set_upload_bps(upload);
+        }
         Ok(())
     }
 
@@ -515,6 +522,7 @@ impl TorrentService {
     fn decorate_torrents(&self, torrents: &mut [TorrentStatus]) -> Result<(), TorrentError> {
         for torrent in torrents.iter_mut() {
             self.attach_library_metadata(torrent)?;
+            self.apply_torrent_bandwidth_limits(torrent)?;
         }
         let live_hashes: HashSet<_> = torrents
             .iter()
@@ -718,6 +726,7 @@ impl TorrentService {
             status.state = TorrentState::Queued;
         }
         self.attach_library_metadata(status)?;
+        self.apply_torrent_bandwidth_limits(status)?;
         if !status.files.is_empty() {
             if let Some(torrent) = self.session.get(TorrentIdOrHash::Id(status.id)) {
                 let priorities: Vec<_> = status.files.iter().map(|file| file.priority).collect();
@@ -731,6 +740,82 @@ impl TorrentService {
             }
         }
         Ok(())
+    }
+
+    fn apply_torrent_bandwidth_limits(
+        &self,
+        status: &mut TorrentStatus,
+    ) -> Result<(), TorrentError> {
+        let (download, upload) = self
+            .persistence
+            .torrent_bandwidth_limits(&status.info_hash)
+            .map_err(TorrentError::Persistence)?;
+        status.download_limit_bytes_per_second = download;
+        status.upload_limit_bytes_per_second = upload;
+
+        if !status.engine_available {
+            return Ok(());
+        }
+        let Some(torrent) = self.session.get(TorrentIdOrHash::Id(status.id)) else {
+            return Ok(());
+        };
+        let target = LimitsConfig {
+            download_bps: to_engine_rate_limit(download)?,
+            upload_bps: to_engine_rate_limit(upload)?,
+        };
+        // Do not replace token buckets during routine status refreshes. This
+        // preserves their pacing state and only mutates when a preference changed.
+        if torrent.ratelimits() != target {
+            torrent.set_ratelimits(target);
+        }
+        Ok(())
+    }
+
+    pub async fn set_torrent_bandwidth_limits(
+        &self,
+        id: usize,
+        direction: TorrentBandwidthDirection,
+        limit_bytes_per_second: Option<u64>,
+    ) -> Result<TorrentStatus, TorrentError> {
+        if limit_bytes_per_second.is_some_and(|limit| limit == 0 || limit > u32::MAX as u64) {
+            return Err(TorrentError::InvalidBandwidthLimit);
+        }
+
+        let _guard = self.bandwidth_operations.lock().await;
+        let current = self
+            .get_torrents()?
+            .into_iter()
+            .find(|torrent| torrent.id == id)
+            .ok_or_else(|| TorrentError::Status("torrent was not found".into()))?;
+        let mut download_limit = current.download_limit_bytes_per_second;
+        let mut upload_limit = current.upload_limit_bytes_per_second;
+        match direction {
+            TorrentBandwidthDirection::Download => download_limit = limit_bytes_per_second,
+            TorrentBandwidthDirection::Upload => upload_limit = limit_bytes_per_second,
+        }
+        self.persistence
+            .set_torrent_bandwidth_limits(&current.info_hash, download_limit, upload_limit)
+            .map_err(TorrentError::Persistence)?;
+
+        if current.engine_available {
+            if let Some(torrent) = self.session.get(TorrentIdOrHash::Id(id)) {
+                torrent.set_ratelimits(LimitsConfig {
+                    download_bps: to_engine_rate_limit(download_limit)?,
+                    upload_bps: to_engine_rate_limit(upload_limit)?,
+                });
+            }
+        }
+
+        self.get_torrent_status_by_id(id)
+    }
+
+    fn get_torrent_status_by_id(&self, id: usize) -> Result<TorrentStatus, TorrentError> {
+        self.get_torrents()?
+            .into_iter()
+            .find(|torrent| torrent.id == id)
+            .ok_or_else(|| {
+                TorrentError::Status("torrent was not found after updating limits".into())
+            })
     }
 
     fn attach_library_metadata(&self, status: &mut TorrentStatus) -> Result<(), TorrentError> {
@@ -2108,11 +2193,22 @@ fn validate_preferences(preferences: &AppPreferences) -> Result<(), TorrentError
         .download_limit_bytes_per_second
         .into_iter()
         .chain(preferences.upload_limit_bytes_per_second)
-        .any(|limit| limit > u32::MAX as u64)
+        .any(|limit| limit == 0 || limit > u32::MAX as u64)
     {
         return Err(TorrentError::InvalidBandwidthLimit);
     }
     Ok(())
+}
+
+fn to_engine_rate_limit(limit: Option<u64>) -> Result<Option<NonZeroU32>, TorrentError> {
+    limit
+        .map(|bytes| {
+            u32::try_from(bytes)
+                .ok()
+                .and_then(NonZeroU32::new)
+                .ok_or(TorrentError::InvalidBandwidthLimit)
+        })
+        .transpose()
 }
 
 fn reorder_waiting(
@@ -2634,6 +2730,8 @@ fn status_from_parts(
         is_seeding: stats.finished && matches!(stats.state, TorrentStatsState::Live),
         category: None,
         tags: Vec::new(),
+        download_limit_bytes_per_second: None,
+        upload_limit_bytes_per_second: None,
     }
 }
 
@@ -2714,6 +2812,11 @@ mod tests {
             validate_preferences(&preferences),
             Err(TorrentError::InvalidBandwidthLimit)
         ));
+        preferences.download_limit_bytes_per_second = Some(0);
+        assert!(matches!(
+            validate_preferences(&preferences),
+            Err(TorrentError::InvalidBandwidthLimit)
+        ));
     }
 
     #[tokio::test]
@@ -2751,6 +2854,77 @@ mod tests {
                 .maximum_simultaneous_downloads,
             2
         );
+        service.api.session().stop().await;
+    }
+
+    #[tokio::test]
+    async fn per_torrent_limits_change_while_paused_and_live() {
+        let temp = tempfile::tempdir().expect("temporary test directory");
+        let output = temp.path().join("downloads");
+        fs::create_dir_all(&output).expect("create downloads");
+        let session = Session::new_with_opts(
+            output.clone(),
+            SessionOptions {
+                dht: None,
+                listen: None,
+                persistence: None,
+                ..SessionOptions::default()
+            },
+        )
+        .await
+        .expect("create test session");
+        let service = TorrentService::with_session(session, output.clone()).expect("service");
+        let response = service
+            .api
+            .api_add_torrent(
+                AddTorrent::from_bytes(ONE_BYTE_TORRENT.to_vec()),
+                Some(AddTorrentOptions {
+                    output_folder: Some(output.to_string_lossy().into_owned()),
+                    paused: true,
+                    ..AddTorrentOptions::default()
+                }),
+            )
+            .await
+            .expect("add paused torrent");
+        let id = response.id.expect("torrent id");
+        let initial = service.get_torrent_status(id).expect("read paused status");
+        let limited = service
+            .set_torrent_bandwidth_limits(id, TorrentBandwidthDirection::Download, Some(512 * 1024))
+            .await
+            .expect("set download limit while paused");
+        assert_eq!(limited.download_limit_bytes_per_second, Some(512 * 1024));
+        assert_eq!(limited.upload_limit_bytes_per_second, None);
+        let handle = service
+            .session
+            .get(TorrentIdOrHash::Id(id))
+            .expect("torrent engine handle");
+        assert_eq!(
+            handle.ratelimits().download_bps,
+            NonZeroU32::new(512 * 1024)
+        );
+
+        service.resume_torrent(id).await.expect("resume torrent");
+        let active_limited = service
+            .set_torrent_bandwidth_limits(id, TorrentBandwidthDirection::Upload, Some(128 * 1024))
+            .await
+            .expect("set upload limit while active");
+        assert_eq!(
+            active_limited.download_limit_bytes_per_second,
+            Some(512 * 1024)
+        );
+        assert_eq!(
+            active_limited.upload_limit_bytes_per_second,
+            Some(128 * 1024)
+        );
+        assert_eq!(handle.ratelimits().upload_bps, NonZeroU32::new(128 * 1024));
+
+        let unlimited = service
+            .set_torrent_bandwidth_limits(id, TorrentBandwidthDirection::Download, None)
+            .await
+            .expect("remove download limit while active");
+        assert_eq!(unlimited.download_limit_bytes_per_second, None);
+        assert_eq!(handle.ratelimits().download_bps, None);
+        assert_eq!(unlimited.info_hash, initial.info_hash);
         service.api.session().stop().await;
     }
 
@@ -3738,7 +3912,7 @@ mod tests {
         let service = TorrentService::with_session(client_session, client_directory.clone())
             .expect("create download service");
         let mut preferences = service.preferences().expect("read preferences");
-        preferences.download_limit_bytes_per_second = Some(32 * 1024);
+        preferences.download_limit_bytes_per_second = Some(64 * 1024);
         service
             .set_preferences(preferences)
             .await
@@ -3789,6 +3963,18 @@ mod tests {
         let status = service
             .get_torrent_status(torrent_id)
             .expect("persist initial torrent state");
+        let limit_status = service
+            .set_torrent_bandwidth_limits(
+                torrent_id,
+                TorrentBandwidthDirection::Download,
+                Some(24 * 1024),
+            )
+            .await
+            .expect("set per-torrent download cap");
+        assert_eq!(
+            limit_status.download_limit_bytes_per_second,
+            Some(24 * 1024)
+        );
         service
             .update_torrent_file_priorities(
                 torrent_id,
@@ -3839,6 +4025,25 @@ mod tests {
         }
         let (high, low) = observed.expect("high-priority file should receive a piece");
         assert!(high > low, "high file has {high} bytes; low file has {low}");
+
+        let before = service
+            .get_torrent_status(torrent_id)
+            .expect("read transfer before rate sample")
+            .downloaded_bytes;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let after = service
+            .get_torrent_status(torrent_id)
+            .expect("read transfer after rate sample")
+            .downloaded_bytes;
+        let transferred = after.saturating_sub(before);
+        assert!(
+            transferred > 0,
+            "the capped torrent should continue transferring"
+        );
+        assert!(
+            transferred <= 24 * 1024 * 4,
+            "per-torrent limit was exceeded over the controlled sample: {transferred} bytes in 2 seconds"
+        );
         assert_eq!(
             low, 0,
             "low-priority file should wait while high data is available"

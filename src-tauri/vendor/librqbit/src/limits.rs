@@ -20,7 +20,13 @@ struct Limit {
 impl Limit {
     fn new_inner(bps: Option<NonZeroU32>) -> Option<Arc<RateLimiter>> {
         let bps = bps?;
-        Some(Arc::new(RateLimiter::direct(Quota::per_second(bps))))
+        // BitTorrent requests are made in protocol blocks. Allow one full block
+        // through even when the configured rate is lower than a block, while
+        // keeping the quota's refill interval tied to the requested bytes/sec.
+        let minimum_burst = NonZeroU32::new(librqbit_core::constants::CHUNK_SIZE)
+            .expect("BitTorrent chunks have a non-zero size");
+        let quota = Quota::per_second(bps).allow_burst(bps.max(minimum_burst));
+        Some(Arc::new(RateLimiter::direct(quota)))
     }
 
     fn new(bps: Option<NonZeroU32>) -> Self {
@@ -94,6 +100,79 @@ impl Limits {
         LimitsConfig {
             upload_bps: self.get_upload_bps(),
             download_bps: self.get_download_bps(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    async fn runtime_limit_updates_apply_without_recreating_the_bucket() {
+        let limits = Limits::new(LimitsConfig {
+            download_bps: NonZeroU32::new(librqbit_core::constants::CHUNK_SIZE),
+            upload_bps: None,
+        });
+        let chunk = NonZeroU32::new(librqbit_core::constants::CHUNK_SIZE).unwrap();
+        limits.prepare_for_download(chunk).await.unwrap();
+
+        let started = Instant::now();
+        limits.prepare_for_download(chunk).await.unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(750));
+        assert_eq!(
+            limits.get_download_bps(),
+            NonZeroU32::new(librqbit_core::constants::CHUNK_SIZE)
+        );
+
+        limits.set_download_bps(None);
+        let started = Instant::now();
+        limits
+            .prepare_for_download(NonZeroU32::new(4096).unwrap())
+            .await
+            .unwrap();
+        assert!(started.elapsed() < Duration::from_millis(250));
+        assert_eq!(limits.get_download_bps(), None);
+    }
+
+    #[tokio::test]
+    async fn upload_bucket_enforces_its_own_rate() {
+        let chunk = NonZeroU32::new(librqbit_core::constants::CHUNK_SIZE).unwrap();
+        let limits = Limits::new(LimitsConfig {
+            download_bps: None,
+            upload_bps: Some(chunk),
+        });
+        limits.prepare_for_upload(chunk).await.unwrap();
+
+        let started = Instant::now();
+        limits.prepare_for_upload(chunk).await.unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(750));
+        assert_eq!(limits.get_upload_bps(), Some(chunk));
+    }
+
+    #[tokio::test]
+    async fn global_and_torrent_buckets_enforce_the_lower_cap() {
+        let chunk = NonZeroU32::new(librqbit_core::constants::CHUNK_SIZE).unwrap();
+        for (global_bps, torrent_bps) in [
+            (chunk.get() * 4, chunk.get()),
+            (chunk.get(), chunk.get() * 4),
+        ] {
+            let global = Limits::new(LimitsConfig {
+                download_bps: NonZeroU32::new(global_bps),
+                upload_bps: None,
+            });
+            let torrent = Limits::new(LimitsConfig {
+                download_bps: NonZeroU32::new(torrent_bps),
+                upload_bps: None,
+            });
+            torrent.prepare_for_download(chunk).await.unwrap();
+            global.prepare_for_download(chunk).await.unwrap();
+
+            let started = Instant::now();
+            torrent.prepare_for_download(chunk).await.unwrap();
+            global.prepare_for_download(chunk).await.unwrap();
+            assert!(started.elapsed() >= Duration::from_millis(750));
         }
     }
 }
