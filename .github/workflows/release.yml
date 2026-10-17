@@ -69,9 +69,89 @@ jobs:
           NODE
           echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
 
+  quality:
+    name: Validate application
+    needs: validate
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.validate.outputs.release_tag }}
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            libfuse2 \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            librsvg2-dev \
+            patchelf \
+            rpm \
+            wget \
+            xdg-utils
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript check
+        run: pnpm typecheck
+
+      - name: Frontend production build
+        run: pnpm build
+
+      - name: Release-tool and updater-version tests
+        run: |
+          pnpm release:test
+          pnpm updater:test
+
+      - name: Release-manifest validation tests
+        run: python -m unittest discover -s scripts -p 'test_*.py'
+
+      - name: Validate updater configuration
+        run: pnpm updater:config
+
+      - name: Rust formatting check
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Rust check and tests
+        run: |
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml
+
   build:
     name: Build ${{ matrix.name }}
-    needs: validate
+    needs:
+      - validate
+      - quality
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
@@ -185,91 +265,18 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.validate.outputs.release_tag }}
+
       - name: Validate draft assets and updater manifest
         id: validate
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
-        run: |
-          python - <<'PY'
-          import json
-          import os
-          import urllib.request
-
-          repository = os.environ["GITHUB_REPOSITORY"]
-          tag = os.environ["RELEASE_TAG"]
-          version = os.environ["RELEASE_VERSION"]
-          token = os.environ["GH_TOKEN"]
-
-          def github_get(url, accept="application/vnd.github+json"):
-              request = urllib.request.Request(
-                  url,
-                  headers={
-                      "Accept": accept,
-                      "Authorization": f"Bearer {token}",
-                      "X-GitHub-Api-Version": "2022-11-28",
-                  },
-              )
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  return response.read()
-
-          api_root = os.environ.get("GITHUB_API_URL", "https://api.github.com")
-          release = json.loads(github_get(f"{api_root}/repos/{repository}/releases/tags/{tag}"))
-          if release["tag_name"] != tag or not release["draft"] or release["prerelease"]:
-              raise SystemExit("Expected a draft stable release; refusing to publish unexpected release state.")
-
-          assets = {asset["name"]: asset for asset in release["assets"]}
-          if "latest.json" not in assets:
-              raise SystemExit("tauri-action did not produce latest.json.")
-          manifest = json.loads(
-              github_get(assets["latest.json"]["url"], "application/octet-stream")
-          )
-          if manifest.get("version") != version:
-              raise SystemExit(f"latest.json version must be {version}.")
-
-          expected_platforms = {
-              "windows-x86_64",
-              "darwin-aarch64",
-              "darwin-x86_64",
-              "linux-x86_64",
-          }
-          platforms = manifest.get("platforms", {})
-          missing = expected_platforms - platforms.keys()
-          if missing:
-              raise SystemExit(f"latest.json is missing platform entries: {', '.join(sorted(missing))}")
-
-          asset_urls = {
-              url
-              for asset in release["assets"]
-              for url in (asset["url"], asset["browser_download_url"])
-          }
-          for platform, entry in platforms.items():
-              if not entry.get("signature") or not entry.get("url", "").startswith("https://"):
-                  raise SystemExit(f"latest.json has an invalid updater entry for {platform}.")
-              if entry["url"] not in asset_urls:
-                  raise SystemExit(f"latest.json points {platform} at an asset missing from this release.")
-
-          names = list(assets)
-          checks = {
-              "Windows NSIS installer": any(name.lower().endswith(".exe") and "setup" in name.lower() for name in names),
-              "Windows MSI installer": any(name.lower().endswith(".msi") for name in names),
-              "macOS disk image": any(name.lower().endswith(".dmg") for name in names),
-              "macOS signed updater archive": any(name.lower().endswith(".app.tar.gz.sig") for name in names),
-              "Linux Debian package": any(name.lower().endswith(".deb") for name in names),
-              "Linux RPM package": any(name.lower().endswith(".rpm") for name in names),
-              "Linux AppImage": any(".appimage" in name.lower() and not name.lower().endswith(".sig") for name in names),
-          }
-          missing_assets = [label for label, present in checks.items() if not present]
-          if missing_assets:
-              raise SystemExit(f"Release is missing required artifacts: {', '.join(missing_assets)}")
-          if sum(name.lower().endswith(".sig") for name in names) < 4:
-              raise SystemExit("Release is missing one or more updater signature assets.")
-
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write(f"release_id={release['id']}\n")
-          print(f"Validated {len(platforms)} signed updater entries and all supported platform installers.")
-          PY
+        run: python scripts/validate_release.py
 
       - name: Publish stable release
         env:

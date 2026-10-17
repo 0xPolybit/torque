@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { getAppInfo, type UpdatePreferences } from "../lib/desktop";
+import { compareSemVer } from "../lib/semver";
 import { updateService, type UpdateInfo } from "../lib/updateService";
 import type { ToastTone } from "../components/ToastRegion";
 
@@ -14,40 +15,6 @@ interface UpdateWorkflowOptions {
 }
 
 const meaningfulStartupErrors = new Set(["manifest", "version", "signature", "disk-space", "permission", "install", "restart"]);
-const semanticVersionPattern = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
-
-function compareVersions(left: string, right: string): number {
-  if (!semanticVersionPattern.test(left)) return -1;
-  if (!semanticVersionPattern.test(right)) return 1;
-  const parse = (value: string) => {
-    const version = value.replace(/^v/, "").split("+")[0]!;
-    const [core, prerelease] = version.split("-");
-    return { core: core.split(".").map(Number), prerelease: prerelease?.split(".") ?? null };
-  };
-  const first = parse(left);
-  const second = parse(right);
-  for (let index = 0; index < 3; index += 1) {
-    if (first.core[index] !== second.core[index]) return first.core[index]! > second.core[index]! ? 1 : -1;
-  }
-  if (first.prerelease === null || second.prerelease === null) {
-    if (first.prerelease === second.prerelease) return 0;
-    return first.prerelease === null ? 1 : -1;
-  }
-  const count = Math.max(first.prerelease.length, second.prerelease.length);
-  for (let index = 0; index < count; index += 1) {
-    const a = first.prerelease[index];
-    const b = second.prerelease[index];
-    if (a === undefined || b === undefined) return a === b ? 0 : a === undefined ? -1 : 1;
-    if (a === b) continue;
-    const aNumeric = /^\d+$/.test(a);
-    const bNumeric = /^\d+$/.test(b);
-    if (aNumeric && bNumeric) return Number(a) > Number(b) ? 1 : -1;
-    if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
-    return a > b ? 1 : -1;
-  }
-  return 0;
-}
-
 export function useUpdateWorkflow({ enabled, preferences, onPreferencesChange, notify }: UpdateWorkflowOptions) {
   const [info, setInfo] = useState<UpdateInfo>(() => updateService.getSnapshot());
   const [checkResult, setCheckResult] = useState<CheckResult>("idle");
@@ -97,8 +64,8 @@ export function useUpdateWorkflow({ enabled, preferences, onPreferencesChange, n
     let shouldDownloadAutomatically = false;
     let shouldNotifyAvailable = false;
     if (result.available && result.newVersion) {
-      if (current.skippedVersion && compareVersions(result.newVersion, current.skippedVersion) > 0) updates.skippedVersion = null;
-      if (current.deferredVersion && compareVersions(result.newVersion, current.deferredVersion) > 0) updates.deferredVersion = null;
+      if (current.skippedVersion && compareSemVer(result.newVersion, current.skippedVersion) > 0) updates.skippedVersion = null;
+      if (current.deferredVersion && compareSemVer(result.newVersion, current.deferredVersion) > 0) updates.deferredVersion = null;
       const skippedVersion = Object.hasOwn(updates, "skippedVersion") ? updates.skippedVersion : current.skippedVersion;
       const deferredVersion = Object.hasOwn(updates, "deferredVersion") ? updates.deferredVersion : current.deferredVersion;
       const isSkipped = skippedVersion === result.newVersion;
@@ -117,8 +84,8 @@ export function useUpdateWorkflow({ enabled, preferences, onPreferencesChange, n
       }
     } else {
       setCheckResult("up-to-date");
-      if (current.skippedVersion && compareVersions(result.currentVersion, current.skippedVersion) >= 0) updates.skippedVersion = null;
-      if (current.deferredVersion && compareVersions(result.currentVersion, current.deferredVersion) >= 0) updates.deferredVersion = null;
+      if (current.skippedVersion && compareSemVer(result.currentVersion, current.skippedVersion) >= 0) updates.skippedVersion = null;
+      if (current.deferredVersion && compareSemVer(result.currentVersion, current.deferredVersion) >= 0) updates.deferredVersion = null;
     }
     await persistUpdatePreferences(updates);
     const latestPreferences = preferencesRef.current;

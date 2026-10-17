@@ -130,6 +130,9 @@ Useful verification commands:
 ```sh
 pnpm typecheck
 pnpm build
+pnpm updater:test
+pnpm updater:config
+python -m unittest discover -s scripts -p 'test_*.py'
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 cargo check --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml
@@ -297,7 +300,7 @@ The configured static manifest endpoint is:
 https://github.com/0xPolybit/torque/releases/latest/download/latest.json
 ```
 
-The [GitHub Releases pipeline](#github-releases-pipeline) publishes a Tauri `latest.json` manifest, each platform's signed updater artifact, and its `.sig` signature as GitHub Release assets. The public verification key is embedded in `src-tauri/tauri.conf.json`; `requireSignedVersion` is enabled so the artifact signature must bind to the version announced in the manifest. This prevents a manifest from advertising one version while pairing it with a different validly signed artifact. Sign future artifacts with the same private key and a current Tauri CLI that records signed-version metadata.
+The [GitHub Releases pipeline](#github-releases-pipeline) publishes a Tauri `latest.json` manifest, each platform's signed updater artifact, and its `.sig` signature as GitHub Release assets. The public verification key is embedded in `src-tauri/tauri.conf.json`; `requireSignedVersion` is enabled so the artifact signature must bind to the version announced in the manifest. This prevents a manifest from advertising one version while pairing it with a different validly signed artifact. The official updater's default comparator accepts only a strictly newer SemVer; Torque adds a stable-channel guard that also rejects equal, older, malformed, and prerelease candidates. Sign future artifacts with the same private key and a current Tauri CLI that records signed-version metadata.
 
 The public verification key is committed as updater configuration; its matching private key is never committed or required as a local file. Keep the existing private signing identity in a secure maintainer vault: losing it can prevent existing installations from accepting future updates. Do not generate a replacement key for a routine release. `.gitignore` excludes `src-tauri/.private/` for maintainers who temporarily need local key storage. GitHub Actions uses these repository secrets:
 
@@ -316,7 +319,7 @@ Torque stores `last_run_version` with the other application state. On startup it
 
 When an update is available, the Settings icon receives a small indicator and the existing in-app toast announces a new or downloaded version. Torque uses that existing toast instead of adding a native notification plugin; background checks do not open a modal. **Later** and **Install Later** defer the same version, suppressing repeat startup notices and automatic downloads for it. **Skip This Version** suppresses that release; the saved skip is cleared when a newer semantic version appears or the skipped version is already installed. A later release can be reviewed and installed from Settings.
 
-Manual checks show an up-to-date version, release version/date/notes and approximate size when available, or a normalized error with a retry path. Update bytes are verified by the official updater plugin before installation. Signature failures never offer a bypass or an install-anyway action. Network and GitHub errors are retryable; manifest/version failures, signature failures, disk-space problems, permission errors, interrupted downloads, installation failures, and restart failures are surfaced without terminating the transfer session. On Windows, the official installer handles the restart; other desktop platforms use the official process plugin's relaunch capability after install.
+Manual checks show an up-to-date version, release version/date/notes and approximate size when available, or a normalized error with a retry path. Update bytes are verified by the official updater plugin during download and again before installation. The UI can install only the opaque update object returned by the plugin; it has no command for supplying an arbitrary URL or signature. Signature failures never offer a bypass or an install-anyway action. Network and GitHub errors are retryable; manifest/version failures, signature failures, disk-space problems, permission errors, interrupted downloads, installation failures, and restart failures are surfaced without terminating the transfer session. On Windows, the official installer handles the restart; other desktop platforms use the official process plugin's relaunch capability after install.
 
 The `default` capability grants the updater permissions needed for explicit check, download, and install calls, plus only `process:allow-restart` for the official relaunch API. It does not grant shell execution or general process permissions.
 
@@ -332,7 +335,7 @@ The workflow builds these supported release targets:
 - macOS Apple Silicon (`aarch64-apple-darwin`) and Intel (`x86_64-apple-darwin`): `.dmg` and updater `.app.tar.gz` artifacts.
 - Linux x64 (`x86_64-unknown-linux-gnu`): Debian `.deb`, RPM, and AppImage packages, including the signed updater artifact.
 
-Each platform job uses `tauri-action` to build and sign its artifacts and update the generated `latest.json`. Jobs run one at a time so the action can safely merge platform entries into the draft manifest. A final job checks the required platform keys, signatures, manifest URLs, and installers before publishing the draft as a stable GitHub Release. If a build or validation fails, any created release stays a draft and is not served as the latest stable update. `uploadUpdaterJson: true` is the current Tauri Action option used to create the manifest from actual signed build artifacts; the repository does not maintain a static updater manifest.
+Each platform job uses `tauri-action` to build and sign its artifacts and update the generated `latest.json`. Jobs run one at a time so the action can safely merge platform entries into the draft manifest. Before publishing, the workflow runs TypeScript and Rust checks/tests, release-tool tests, and mocked manifest-validation tests. Its final release gate requires the candidate to be newer than GitHub's latest stable version, checks the exact supported platform-key set, maps each key to the correct architecture-specific updater bundle, verifies every HTTPS URL resolves to an asset in that exact tagged release, compares each manifest signature with its `.sig` asset, and confirms all human-installable packages exist. If a build or validation fails, any created release stays a draft and is not served as the latest stable update. `uploadUpdaterJson: true` is the current Tauri Action option used to create the manifest from actual signed build artifacts; the repository does not maintain a static updater manifest.
 
 Configure these repository Actions secrets before publishing:
 
@@ -367,6 +370,8 @@ src/
   RemoveTorrentDialog.tsx Explicit keep-files or delete-files confirmation
   lib/                    Typed Tauri command wrappers and the normalized updater service
     updateService.ts      Signed check/download/install lifecycle and throttled progress snapshots
+    semver.js              Stable-channel SemVer guard for update candidates
+    updateErrors.js        Safe, normalized updater failure categories
   styles.css              Desktop layout, themes, controls, and responsive rules
 src-tauri/
   capabilities/           Narrow Tauri window capability
@@ -391,6 +396,7 @@ frontend/
 README.md                 Project and developer guide
 .github/workflows/release.yml
                           Signed cross-platform desktop release pipeline
+scripts/                  Version/preflight tools, updater tests, and mocked release-asset validation
 frontend/README.md        Standalone marketing and documentation website guide
 DESIGN.md                 Visual-system notes
 PRODUCT.md                Product context

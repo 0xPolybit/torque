@@ -108,7 +108,7 @@ function checkGitState({ allowNonMain, localOnly, candidateTag }) {
   }
 }
 
-function validateUpdaterConfiguration(root = ROOT) {
+export function validateUpdaterConfiguration(root = ROOT) {
   const tauri = JSON.parse(readFileSync(path.join(root, 'src-tauri/tauri.conf.json'), 'utf8'));
   const publicKey = tauri.plugins?.updater?.pubkey;
   if (typeof publicKey !== 'string' || !publicKey.trim()) throw new Error('Updater public key is missing from src-tauri/tauri.conf.json.');
@@ -118,22 +118,51 @@ function validateUpdaterConfiguration(root = ROOT) {
   } catch {
     // The validation below reports malformed or placeholder public keys uniformly.
   }
-  if (!decodedKey.startsWith('untrusted comment: minisign public key:')) {
+  const publicKeyLines = decodedKey.trim().split(/\r?\n/);
+  const publicKeyPayload = publicKeyLines[1] ?? '';
+  const payloadBytes = Buffer.from(publicKeyPayload, 'base64');
+  const validPublicKey = publicKeyLines.length === 2
+    && /^untrusted comment: minisign public key: [0-9A-Fa-f]{16}$/.test(publicKeyLines[0])
+    && /^[A-Za-z0-9+/]{56}$/.test(publicKeyPayload)
+    && payloadBytes.length === 42
+    && payloadBytes.toString('base64') === publicKeyPayload;
+  if (!validPublicKey) {
     throw new Error('Updater public key is not a valid embedded Tauri/minisign public key.');
   }
   if (tauri.bundle?.createUpdaterArtifacts !== true) throw new Error('bundle.createUpdaterArtifacts must be enabled in src-tauri/tauri.conf.json.');
   if (tauri.plugins?.updater?.requireSignedVersion !== true) throw new Error('plugins.updater.requireSignedVersion must be enabled.');
+  if (tauri.plugins?.updater?.allowDowngrades === true) throw new Error('Updater downgrade support must remain disabled.');
 
   const { owner, repository } = githubRepository();
   const expectedEndpoint = `https://github.com/${owner}/${repository}/releases/latest/download/latest.json`;
   const endpoints = tauri.plugins.updater.endpoints;
-  if (!Array.isArray(endpoints) || !endpoints.includes(expectedEndpoint)) {
+  const allEndpointsUseHttps = Array.isArray(endpoints) && endpoints.every((endpoint) => {
+    try {
+      return new URL(endpoint).protocol === 'https:';
+    } catch {
+      return false;
+    }
+  });
+  if (!allEndpointsUseHttps || !endpoints.includes(expectedEndpoint)) {
     throw new Error(`Updater endpoint must include ${expectedEndpoint}, matching the GitHub origin.`);
   }
 
   const gitignore = readFileSync(path.join(root, '.gitignore'), 'utf8');
   if (!gitignore.split(/\r?\n/).includes('src-tauri/.private/')) {
     throw new Error('.gitignore must exclude src-tauri/.private/ for local signing-key storage.');
+  }
+
+  const capabilities = JSON.parse(readFileSync(path.join(root, 'src-tauri/capabilities/default.json'), 'utf8'));
+  const expectedPermissions = [
+    'core:window:allow-set-theme',
+    'updater:allow-check',
+    'updater:allow-download',
+    'updater:allow-install',
+    'process:allow-restart',
+  ];
+  if (!Array.isArray(capabilities.permissions)
+      || [...capabilities.permissions].sort().join('\n') !== [...expectedPermissions].sort().join('\n')) {
+    throw new Error('Tauri capability permissions changed; review and explicitly validate the required plugin permissions.');
   }
 }
 
@@ -187,6 +216,11 @@ function release(kind, options) {
 
 function main() {
   const { command, options } = parseArgs(process.argv.slice(2));
+  if (command === 'updater-config') {
+    validateUpdaterConfiguration();
+    console.log('Updater configuration passed local security checks.');
+    return;
+  }
   if (command === 'preflight') {
     const plan = runPreflight(options);
     console.log(`Preflight passed: ${plan.currentVersion} → ${plan.candidateVersion} (${plan.candidateTag}).`);
@@ -196,7 +230,7 @@ function main() {
     release(command, options);
     return;
   }
-  throw new Error('Usage: node scripts/release.mjs preflight [--kind patch|minor|major] [--allow-non-main] [--local-only]\n       node scripts/release.mjs patch|minor|major [--allow-non-main] [--local-only]');
+  throw new Error('Usage: node scripts/release.mjs updater-config\n       node scripts/release.mjs preflight [--kind patch|minor|major] [--allow-non-main] [--local-only]\n       node scripts/release.mjs patch|minor|major [--allow-non-main] [--local-only]');
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

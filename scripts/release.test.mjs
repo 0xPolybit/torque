@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { bumpVersion, parseStableVersion, readVersions, updateVersionFiles } from './release.mjs';
+import { bumpVersion, parseStableVersion, readVersions, updateVersionFiles, validateUpdaterConfiguration } from './release.mjs';
 
 test('accepts stable three-part SemVer and rejects prerelease or malformed versions', () => {
   assert.deepEqual(parseStableVersion('0.2.1'), [0n, 2n, 1n]);
@@ -33,4 +33,34 @@ test('updates all four application version locations while preserving other valu
   assert.deepEqual(Object.values(versions), ['0.2.2', '0.2.2', '0.2.2', '0.2.2']);
   assert.equal(JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).private, true);
   assert.match(readFileSync(path.join(root, 'src-tauri/Cargo.lock'), 'utf8'), /name = "other"\nversion = "1\.0\.0"/);
+});
+
+test('current updater configuration embeds a valid public key and requires signed stable updates', () => {
+  assert.doesNotThrow(() => validateUpdaterConfiguration());
+});
+
+test('updater preflight rejects disabled signed-version checks and downgrade permission', (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'torque-updater-config-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(path.join(root, 'src-tauri/capabilities'), { recursive: true });
+  const config = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8'));
+  writeFileSync(path.join(root, '.gitignore'), 'src-tauri/.private/\n');
+  const capabilityPath = path.join(root, 'src-tauri/capabilities/default.json');
+  const capabilities = JSON.parse(readFileSync('src-tauri/capabilities/default.json', 'utf8'));
+  writeFileSync(capabilityPath, JSON.stringify(capabilities));
+
+  config.plugins.updater.requireSignedVersion = false;
+  writeFileSync(path.join(root, 'src-tauri/tauri.conf.json'), JSON.stringify(config));
+  assert.throws(() => validateUpdaterConfiguration(root), /requireSignedVersion/);
+
+  config.plugins.updater.requireSignedVersion = true;
+  config.plugins.updater.allowDowngrades = true;
+  writeFileSync(path.join(root, 'src-tauri/tauri.conf.json'), JSON.stringify(config));
+  assert.throws(() => validateUpdaterConfiguration(root), /downgrade support/);
+
+  config.plugins.updater.allowDowngrades = false;
+  writeFileSync(path.join(root, 'src-tauri/tauri.conf.json'), JSON.stringify(config));
+  capabilities.permissions.push('shell:allow-execute');
+  writeFileSync(capabilityPath, JSON.stringify(capabilities));
+  assert.throws(() => validateUpdaterConfiguration(root), /capability permissions changed/);
 });
