@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Check,
+  CheckCircle2,
+  Download,
   FolderDown,
   HardDrive,
   Monitor,
@@ -9,10 +11,12 @@ import {
   ShieldCheck,
   Sparkles,
   Upload,
+  RefreshCw,
   X,
   Zap,
 } from "lucide-react";
-import type { AppInfo, AppPreferences, ThemePreference } from "../../lib/desktop";
+import type { AppInfo, AppPreferences, ThemePreference, UpdatePreferences } from "../../lib/desktop";
+import type { UpdateInfo } from "../../lib/updateService";
 
 interface SettingsDialogProps {
   appInfo: AppInfo | null;
@@ -23,6 +27,15 @@ interface SettingsDialogProps {
   selectingDirectory: boolean;
   onChooseDirectory: () => Promise<boolean>;
   onPreferencesChange: (changes: Partial<AppPreferences>) => Promise<void>;
+  onUpdatePreferencesChange: (changes: Partial<UpdatePreferences>) => Promise<void>;
+  updateInfo: UpdateInfo;
+  updateCheckResult: "idle" | "up-to-date" | "available" | "skipped";
+  onCheckForUpdates: () => Promise<UpdateInfo>;
+  onDownloadUpdate: () => Promise<UpdateInfo>;
+  onInstallUpdate: () => Promise<UpdateInfo>;
+  onRestartApplication: () => Promise<void>;
+  onDeferUpdate: () => Promise<void>;
+  onSkipUpdate: () => Promise<void>;
   onClose: () => void;
 }
 
@@ -144,6 +157,27 @@ function RateLimitSetting({
   );
 }
 
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "—";
+  if (bytes === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const unitIndex = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const amount = bytes / 1024 ** unitIndex;
+  return `${amount.toLocaleString(undefined, { maximumFractionDigits: amount >= 100 ? 0 : 1 })} ${units[unitIndex]}`;
+}
+
+function publishDate(value: string | null): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toLocaleDateString(undefined, { dateStyle: "medium" });
+}
+
+function lastCheckDate(value: number | null): string {
+  if (value === null) return "Never";
+  const date = new Date(value * 1000);
+  return Number.isNaN(date.getTime()) ? "Never" : date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
 export function SettingsDialog({
   appInfo,
   downloadDirectoryPath,
@@ -153,6 +187,15 @@ export function SettingsDialog({
   selectingDirectory,
   onChooseDirectory,
   onPreferencesChange,
+  onUpdatePreferencesChange,
+  updateInfo,
+  updateCheckResult,
+  onCheckForUpdates,
+  onDownloadUpdate,
+  onInstallUpdate,
+  onRestartApplication,
+  onDeferUpdate,
+  onSkipUpdate,
   onClose,
 }: SettingsDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -167,6 +210,15 @@ export function SettingsDialog({
   }, []);
 
   const update = (change: Partial<AppPreferences>) => void onPreferencesChange(change);
+  const updateSettings = (change: Partial<UpdatePreferences>) => void onUpdatePreferencesChange(change);
+  const approximateBytes = updateInfo.totalBytes ?? updateInfo.approximateDownloadBytes;
+  const shownProgress = updateInfo.progress ?? (
+    updateInfo.totalBytes && updateInfo.totalBytes > 0
+      ? Math.min(100, Math.round((updateInfo.downloadedBytes / updateInfo.totalBytes) * 100))
+      : null
+  );
+  const isSkipped = updateInfo.newVersion !== null && preferences.updates.skippedVersion === updateInfo.newVersion;
+  const isDeferred = updateInfo.newVersion !== null && preferences.updates.deferredVersion === updateInfo.newVersion;
 
   return (
     <dialog
@@ -184,7 +236,7 @@ export function SettingsDialog({
       <header className="settings-dialog__header">
         <div>
           <h2 id="settings-title">Settings</h2>
-          <p>Set how Torque schedules and handles your downloads.</p>
+          <p>Manage downloads, appearance, and application updates.</p>
         </div>
         <button className="icon-button" type="button" onClick={onClose} aria-label="Close settings">
           <X size={17} aria-hidden="true" />
@@ -238,6 +290,147 @@ export function SettingsDialog({
             <option value="light">Light</option>
           </select>
         </div>
+      </section>
+
+      <section className="settings-section settings-update-section" aria-labelledby="settings-updates-heading">
+        <h3 id="settings-updates-heading">Updates</h3>
+        <div className="settings-row">
+          <span className="settings-row__icon" aria-hidden="true"><RefreshCw size={16} /></span>
+          <div className="settings-row__copy">
+            <strong>Current version</strong>
+            <span>v{appInfo?.version ?? updateInfo.currentVersion}</span>
+          </div>
+        </div>
+        <div className="settings-row">
+          <span className="settings-row__icon" aria-hidden="true"><Sparkles size={16} /></span>
+          <div className="settings-row__copy">
+            <strong>Update channel</strong>
+            <span>Updates are provided from Torque’s stable GitHub Releases channel.</span>
+          </div>
+          <span className="settings-update__badge">Stable</span>
+        </div>
+        <ToggleRow icon={<RefreshCw size={16} />} title="Check automatically" description="Check shortly after launch when the interval is due." checked={preferences.updates.automaticCheckEnabled} disabled={savingPreference} onChange={(checked) => updateSettings({ automaticCheckEnabled: checked })} />
+        <div className="settings-row">
+          <span className="settings-row__icon" aria-hidden="true"><Monitor size={16} /></span>
+          <label className="settings-row__copy" htmlFor="settings-update-frequency">
+            <strong>Check frequency</strong>
+            <span>Last successful check: {lastCheckDate(preferences.updates.lastSuccessfulCheckAt)}</span>
+          </label>
+          <select
+            id="settings-update-frequency"
+            className="settings-theme-select"
+            value={preferences.updates.checkFrequencyHours}
+            disabled={savingPreference}
+            onChange={(event) => updateSettings({ checkFrequencyHours: Number(event.currentTarget.value) })}
+          >
+            <option value={6}>Every 6 hours</option>
+            <option value={12}>Every 12 hours</option>
+            <option value={24}>Every 24 hours</option>
+            <option value={168}>Every week</option>
+          </select>
+        </div>
+        <ToggleRow icon={<Download size={16} />} title="Automatic download" description="Download verified updates in the background when available." checked={preferences.updates.automaticDownload} disabled={savingPreference} onChange={(checked) => updateSettings({ automaticDownload: checked })} />
+        <div className="settings-row">
+          <span className="settings-row__icon" aria-hidden="true"><ShieldCheck size={16} /></span>
+          <div className="settings-row__copy">
+            <strong>Install behavior</strong>
+            <span>Torque always asks before installing an update.</span>
+          </div>
+          <select className="settings-theme-select" aria-label="Install behavior" defaultValue="ask" disabled title="Torque always asks before installing an update.">
+            <option value="ask">Ask before installing</option>
+          </select>
+        </div>
+
+        <div className="settings-update__check-row">
+          <button
+            className="text-button settings-update__check"
+            type="button"
+            disabled={updateInfo.checking || updateInfo.downloading || updateInfo.installing || savingPreference}
+            onClick={() => void onCheckForUpdates()}
+          >
+            <RefreshCw size={14} className={updateInfo.checking ? "settings-update__spin" : undefined} aria-hidden="true" />
+            {updateInfo.checking ? "Checking for updates…" : "Check for Updates"}
+          </button>
+          {preferences.updates.lastSuccessfulCheckAt !== null && <span className="settings-update__last-check">Checked {lastCheckDate(preferences.updates.lastSuccessfulCheckAt)}</span>}
+        </div>
+
+        {updateInfo.error && (
+          <p className={`settings-update__error${updateInfo.errorCategory === "signature" ? " is-critical" : ""}`} role="alert">
+            <strong>{updateInfo.errorCategory === "signature" ? "Verification failed" : "Update unavailable"}</strong>
+            <span>{updateInfo.error}</span>
+            {updateInfo.errorCategory === "signature" && <span>The update remains blocked. There is no option to bypass signature verification.</span>}
+          </p>
+        )}
+
+        {!updateInfo.error && updateCheckResult === "up-to-date" && !updateInfo.available && (
+          <p className="settings-update__result" role="status"><CheckCircle2 size={15} aria-hidden="true" />You’re up to date · Version {appInfo?.version ?? updateInfo.currentVersion}</p>
+        )}
+        {!updateInfo.error && updateCheckResult === "skipped" && (
+          <p className="settings-update__result" role="status">Version {preferences.updates.skippedVersion} is skipped. A newer release will be checked automatically.</p>
+        )}
+
+        {(updateInfo.available || updateInfo.restartRequired) && updateInfo.newVersion && (
+          <div className="settings-update__details" aria-live="polite">
+            <div className="settings-update__heading">
+              <strong>{updateInfo.restartRequired ? "Update installed" : "Update Available"}</strong>
+              {isDeferred && <span className="settings-update__badge">Deferred</span>}
+            </div>
+            <p className="settings-update__version">v{updateInfo.currentVersion} <span aria-hidden="true">→</span> v{updateInfo.newVersion}</p>
+            <div className="settings-update__metadata">
+              {publishDate(updateInfo.releaseDate) && <span>Published {publishDate(updateInfo.releaseDate)}</span>}
+              {approximateBytes !== null && <span>Approx. {formatBytes(approximateBytes)}</span>}
+            </div>
+            {updateInfo.releaseNotes && (
+              <div className="settings-update__notes">
+                <span>Release notes</span>
+                <pre>{updateInfo.releaseNotes}</pre>
+              </div>
+            )}
+
+            {updateInfo.installing && <p className="settings-update__installing" role="status">Installing update…</p>}
+            {updateInfo.downloading && (
+              <div className="settings-update__download" role="status" aria-live="polite">
+                <div className="settings-update__download-heading">
+                  <span>Downloading update…</span>
+                  {shownProgress !== null && <strong>{shownProgress}%</strong>}
+                </div>
+                <div className="settings-update__progress" role="progressbar" aria-label="Update download progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={shownProgress ?? undefined}>
+                  <span style={shownProgress === null ? undefined : { width: `${shownProgress}%` }} />
+                </div>
+                <span className="settings-update__download-size">{formatBytes(updateInfo.downloadedBytes)} / {approximateBytes === null ? "Size unknown" : formatBytes(approximateBytes)}</span>
+              </div>
+            )}
+
+            {updateInfo.downloaded && updateInfo.errorCategory !== "signature" && !updateInfo.restartRequired && !updateInfo.installing && (
+              <div className="settings-update__ready" role="status">
+                <strong>Update ready to install</strong>
+                <div className="settings-update__actions">
+                  <button className="primary-button" type="button" disabled={savingPreference} onClick={() => void onInstallUpdate()}>Restart &amp; Update</button>
+                  <button className="text-button" type="button" onClick={() => void onDeferUpdate()}>Install Later</button>
+                </div>
+              </div>
+            )}
+
+            {!updateInfo.downloaded && !updateInfo.downloading && !updateInfo.installing && !updateInfo.restartRequired && (
+              <div className="settings-update__actions">
+                <button className="primary-button" type="button" disabled={updateInfo.checking || savingPreference} onClick={() => void onDownloadUpdate()}>
+                  <Download size={14} aria-hidden="true" /> Download Update
+                </button>
+                <button className="text-button" type="button" onClick={() => void onDeferUpdate()}>Later</button>
+              </div>
+            )}
+            {updateInfo.restartRequired && (
+              <div className="settings-update__ready" role="status">
+                <strong>Update installed. Restart Torque to finish applying it.</strong>
+                <button className="primary-button" type="button" onClick={() => void onRestartApplication()}>Restart Torque</button>
+              </div>
+            )}
+            {!isSkipped && !updateInfo.downloading && !updateInfo.downloaded && !updateInfo.restartRequired && (
+              <button className="text-button settings-update__skip" type="button" onClick={() => void onSkipUpdate()}>Skip This Version</button>
+            )}
+          </div>
+        )}
+        <p className="settings-section__note">Updates are verified with Torque’s embedded signing key before installation. Release notes are shown as plain text.</p>
       </section>
 
       <section className="settings-section" aria-labelledby="settings-app-heading">

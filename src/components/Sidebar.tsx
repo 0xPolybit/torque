@@ -27,6 +27,7 @@ interface SidebarProps {
   torrentCount: number;
   completedCount: number;
   settingsEnabled: boolean;
+  updateAvailable: boolean;
   currentView: AppView;
   onNavigate: (view: AppView) => void;
   torrents: TorrentStatus[];
@@ -51,6 +52,7 @@ export function Sidebar({
   torrentCount,
   completedCount,
   settingsEnabled,
+  updateAvailable,
   currentView,
   onNavigate,
   torrents,
@@ -245,6 +247,7 @@ export function Sidebar({
         >
           <Settings2 size={17} strokeWidth={1.8} aria-hidden="true" />
           <span>Settings</span>
+          {updateAvailable && <span className="sidebar__update-dot" aria-label="Update available" />}
         </button>
       </nav>
 

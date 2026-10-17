@@ -4,7 +4,7 @@ mod service;
 
 pub use persistence::{
     AppPreferences, TorrentCategory, TorrentCategoryEdit, TorrentLibraryMetadata, TorrentTag,
-    TorrentTagEdit,
+    TorrentTagEdit, UpdatePreferences,
 };
 pub use priority::TorrentFilePriorityUpdate;
 pub use service::{

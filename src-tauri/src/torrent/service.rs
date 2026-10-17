@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use super::persistence::{
     now_millis, AppPreferences, ApplicationPersistence, TorrentCategory, TorrentCategoryEdit,
-    TorrentLibraryMetadata, TorrentTag, TorrentTagEdit,
+    TorrentLibraryMetadata, TorrentTag, TorrentTagEdit, UpdatePreferences,
 };
 use super::priority::{ordered_file_indices, TorrentFilePriority, TorrentFilePriorityUpdate};
 
@@ -497,6 +497,17 @@ impl TorrentService {
         let _guard = self.queue_operations.lock().await;
         self.schedule_queue_locked().await?;
         self.preferences()
+    }
+
+    pub fn set_update_preferences(
+        &self,
+        preferences: UpdatePreferences,
+    ) -> Result<UpdatePreferences, TorrentError> {
+        validate_update_preferences(&preferences)?;
+        self.persistence
+            .set_update_preferences(preferences)
+            .map_err(TorrentError::Persistence)?;
+        Ok(self.preferences()?.updates)
     }
 
     fn apply_rate_limits(&self) -> Result<(), TorrentError> {
@@ -2197,6 +2208,16 @@ fn validate_preferences(preferences: &AppPreferences) -> Result<(), TorrentError
     {
         return Err(TorrentError::InvalidBandwidthLimit);
     }
+    validate_update_preferences(&preferences.updates)?;
+    Ok(())
+}
+
+fn validate_update_preferences(preferences: &UpdatePreferences) -> Result<(), TorrentError> {
+    if ![6, 12, 24, 168].contains(&preferences.check_frequency_hours) {
+        return Err(TorrentError::Engine(
+            "Update check frequency must be 6, 12, 24, or 168 hours.".to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -2811,6 +2832,12 @@ mod tests {
         assert!(matches!(
             validate_preferences(&preferences),
             Err(TorrentError::InvalidBandwidthLimit)
+        ));
+        preferences.download_limit_bytes_per_second = None;
+        preferences.updates.check_frequency_hours = 7;
+        assert!(matches!(
+            validate_preferences(&preferences),
+            Err(TorrentError::Engine(_))
         ));
         preferences.download_limit_bytes_per_second = Some(0);
         assert!(matches!(

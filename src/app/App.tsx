@@ -16,11 +16,18 @@ import { filterTorrents, formatSpeed, type TorrentFilter } from "../features/tra
 import type { TorrentDownloadSource } from "../lib/discovery";
 import { useDesktopConnection } from "./useDesktopConnection";
 import { useTorrentQueue } from "./useTorrentQueue";
+import { useUpdateWorkflow } from "./useUpdateWorkflow";
 
 export default function App() {
   const { connection, retry } = useDesktopConnection();
   const isConnected = connection.state === "connected";
   const queue = useTorrentQueue(isConnected);
+  const updateWorkflow = useUpdateWorkflow({
+    enabled: isConnected && queue.preferencesLoaded,
+    preferences: queue.preferences.updates,
+    onPreferencesChange: queue.updateUpdatePreferences,
+    notify: queue.notify,
+  });
   const { pauseTorrent, resumeTorrent, setError } = queue;
   const [showAddTorrent, setShowAddTorrent] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -228,6 +235,7 @@ export default function App() {
         torrentCount={queue.torrents.length}
         completedCount={completedCount}
         settingsEnabled={isConnected && queue.preferencesLoaded}
+        updateAvailable={updateWorkflow.info.available}
         currentView={currentView}
         onNavigate={navigate}
         torrents={queue.torrents}
@@ -276,6 +284,7 @@ export default function App() {
               disabled={!isConnected || !queue.preferencesLoaded}
             >
               <Settings2 size={17} strokeWidth={1.8} aria-hidden="true" />
+              {updateWorkflow.info.available && <span className="workspace__settings-update-dot" aria-label="Update available" />}
             </button>
           </div>
         </header>
@@ -448,6 +457,15 @@ export default function App() {
           selectingDirectory={queue.selectingDirectory}
           onChooseDirectory={queue.chooseDirectory}
           onPreferencesChange={queue.updatePreferences}
+          onUpdatePreferencesChange={queue.updateUpdatePreferences}
+          updateInfo={updateWorkflow.info}
+          updateCheckResult={updateWorkflow.checkResult}
+          onCheckForUpdates={updateWorkflow.manualCheckForUpdate}
+          onDownloadUpdate={updateWorkflow.downloadUpdate}
+          onInstallUpdate={updateWorkflow.installUpdate}
+          onRestartApplication={() => updateWorkflow.restartApplication()}
+          onDeferUpdate={updateWorkflow.deferUpdate}
+          onSkipUpdate={updateWorkflow.skipUpdate}
           onClose={() => {
             setShowSettings(false);
             setCurrentView(viewBeforeSettings.current);

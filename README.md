@@ -70,6 +70,7 @@ Torque is a cross-platform desktop BitTorrent client built with a Tauri shell, a
 - Review provider details, license, source page, info hash when supplied, and available torrent mechanism before inspection.
 - Inspect a discovered torrent through the existing metadata and file-selection step; opening a result never starts a transfer directly.
 - View completed downloads in History and reach Settings from primary navigation.
+- Check for signed stable updates in the background, review release notes and progress, and choose when to install.
 - Use keyboard-accessible dialogs, inline validation, loading feedback, and status notifications.
 - Use Ctrl/Cmd shortcuts for adding torrents, pasting magnet links, Browse search, selected-download controls, and removal.
 
@@ -214,7 +215,7 @@ Search runs in the Rust backend and has a 12-second HTTP client timeout, a descr
 
 ## Settings and persistence
 
-Settings include a default download folder, **Ask for destination every time**, automatic start and resume behavior, a maximum of 1–64 simultaneous downloads (default 3), global download and upload caps, removal/deletion confirmations, close-to-tray behavior, and System, Dark, or Light theme. Defaults start new downloads automatically, resume unfinished torrents on launch, use unlimited bandwidth, confirm removals and file deletion, keep tray behavior off, and use Dark theme.
+Settings include a default download folder, **Ask for destination every time**, automatic start and resume behavior, a maximum of 1–64 simultaneous downloads (default 3), global download and upload caps, removal/deletion confirmations, close-to-tray behavior, and System, Dark, or Light theme. Update settings show the installed version and stable channel, control automatic checks and their 6-hour, 12-hour, 24-hour, or weekly interval, and optionally download a verified update in the background. Updates always require an explicit install action. Defaults start new downloads automatically, resume unfinished torrents on launch, use unlimited bandwidth, confirm removals and file deletion, keep tray behavior off, use Dark theme, and check for updates every 24 hours.
 
 Each torrent also has independent download and upload limits in its **More actions** menu. Choose **Unlimited**, a quick preset (256 KB/s, 1 MB/s, 5 MB/s, or 10 MB/s), or **Custom…** and enter KB/s or MB/s. A small Limits indicator appears on torrents with either override. Global limits use librqbit's shared session buckets; per-torrent limits use a separate mutable bucket on that torrent. Traffic passes through both, so the lower configured cap governs each torrent while the global cap continues to constrain aggregate session traffic. Changing a cap updates the existing limiter in place and does not restart the session or torrent. Overrides are saved by info hash and restored for active, paused, completed, and history entries.
 
@@ -309,7 +310,15 @@ $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "<key password, if set>"
 pnpm tauri:build
 ```
 
-For an unencrypted key, set the password variable to an empty string. Never place private key contents or passwords in source files or `.env` files. Production bundling creates updater artifacts because `bundle.createUpdaterArtifacts` is `true`; development and plain Vite runs do not require signing credentials. Update checks explicitly report that they are disabled in development builds. The current UI does not automatically check, download, or install updates; those actions are exposed through the service for a later user-controlled update flow.
+For an unencrypted key, set the password variable to an empty string. Never place private key contents or passwords in source files or `.env` files. Production bundling creates updater artifacts because `bundle.createUpdaterArtifacts` is `true`; development and plain Vite runs do not require signing credentials. Update checks explicitly report that they are disabled in development builds.
+
+The Settings dialog's **Updates** section shows the current version and stable channel, the last successful check, automatic-check frequency, automatic download, and the fixed **Ask before installing** behavior. A due check runs a few seconds after desktop startup without blocking the window or opening a dialog. Successful check time is persisted with application preferences. Update settings, deferred version, and skipped version live in `application-state.json` beside the torrent preferences; raw release data and signing credentials are not persisted.
+
+The frontend `useUpdateWorkflow` coordinates startup/manual checks and preferences, while [`src/lib/updateService.ts`](src/lib/updateService.ts) owns the updater plugin resource and publishes normalized snapshots. Update settings use a dedicated `set_update_preferences` command and do not reschedule or otherwise touch the torrent queue. Download progress is delivered to subscribers at a bounded rate. When the manifest provides a size field Torque shows it as an estimate; otherwise the download's reported content length is used once transfer starts. Release notes render as plain text, so manifest HTML is never executed or interpreted. Oversized notes are clipped to a safe display limit.
+
+When an update is available, the Settings icon receives a small indicator and the existing in-app toast announces a new or downloaded version. Torque uses that existing toast instead of adding a native notification plugin; background checks do not open a modal. **Later** and **Install Later** defer the same version, suppressing repeat startup notices and automatic downloads for it. **Skip This Version** suppresses that release; the saved skip is cleared when a newer semantic version appears or the skipped version is already installed. A later release can be reviewed and installed from Settings.
+
+Manual checks show an up-to-date version, release version/date/notes and approximate size when available, or a normalized error with a retry path. Update bytes are verified by the official updater plugin before installation. Signature failures never offer a bypass or an install-anyway action. Network and GitHub errors are retryable; manifest/version failures, signature failures, disk-space problems, permission errors, interrupted downloads, installation failures, and restart failures are surfaced without terminating the transfer session. On Windows, the official installer handles the restart; other desktop platforms use the official process plugin's relaunch capability after install.
 
 The `default` capability grants the updater permissions needed for explicit check, download, and install calls, plus only `process:allow-restart` for the official relaunch API. It does not grant shell execution or general process permissions.
 
@@ -317,7 +326,8 @@ The `default` capability grants the updater permissions needed for explicit chec
 
 ```text
 src/
-  app/                    App shell, desktop connection, queue, taxonomy, and preferences state
+  app/                    App shell, desktop connection, queue, update workflow, taxonomy, and preferences state
+    useUpdateWorkflow.ts  Startup cadence, update preference persistence, and user actions
   components/             Sidebar, backend status, and toast notifications
   features/discovery/     Browse controls, results, details, recent searches, and provider state
   features/transfers/     Add/inspection/settings/details/removal dialogs, virtual file tree, filters, and transfer rows
@@ -329,6 +339,7 @@ src/
   SettingsDialog.tsx      Persisted queue, bandwidth, appearance, confirmation, and tray preferences
   RemoveTorrentDialog.tsx Explicit keep-files or delete-files confirmation
   lib/                    Typed Tauri command wrappers and the normalized updater service
+    updateService.ts      Signed check/download/install lifecycle and throttled progress snapshots
   styles.css              Desktop layout, themes, controls, and responsive rules
 src-tauri/
   capabilities/           Narrow Tauri window capability
@@ -337,7 +348,7 @@ src-tauri/
   src/discovery/          SearchProvider contract, registry, models, and Internet Archive adapter
   src/torrent/service.rs  rqbit session, queue scheduler, global/per-torrent rate limits, validation, and status mapping
   src/torrent/persistence.rs
-                          Versioned preferences, queue, categories, tags, and hash associations
+                          Versioned preferences including update cadence/skip state, queue, and library metadata
   vendor/librqbit/         Isolated 9.0.1 integration patch for torrent priorities and mutable per-torrent limits
   src/lib.rs              Service setup and command registration
   tauri.conf.json         Product metadata, window, security, and bundle settings

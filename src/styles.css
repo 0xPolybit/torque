@@ -423,6 +423,30 @@ button:focus-visible,
   color: var(--color-text);
 }
 
+.workspace__settings-update-dot,
+.sidebar__update-dot {
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--color-panel);
+  border-radius: 50%;
+  background: var(--color-accent);
+}
+
+.workspace__settings-update-dot {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+}
+
+.workspace__settings {
+  position: relative;
+}
+
+.sidebar__update-dot {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -500,6 +524,14 @@ button:focus-visible,
 .toast-message > svg {
   flex: 0 0 auto;
   color: var(--color-accent);
+}
+
+.toast-message--info > svg:first-child {
+  color: #8eb7df;
+}
+
+.toast-message--error > svg:first-child {
+  color: var(--color-danger);
 }
 
 .toast-message > span {
@@ -2321,6 +2353,239 @@ dialog.torrent-details::backdrop {
   color: var(--color-subtle);
   font-size: 10px;
   line-height: 1.55;
+}
+
+.settings-update__badge {
+  flex: 0 0 auto;
+  padding: 4px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  color: var(--color-muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.settings-update__value {
+  max-width: 145px;
+  color: var(--color-muted);
+  font-size: 10px;
+  text-align: right;
+}
+
+.settings-update__check-row {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-border-soft);
+}
+
+.settings-update__check {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+}
+
+.settings-update__last-check,
+.settings-update__metadata {
+  color: var(--color-subtle);
+  font-size: 10px;
+}
+
+.settings-update__details {
+  margin-top: 11px;
+  padding: 13px;
+  border: 1px solid var(--color-border);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--color-panel) 88%, #202820);
+}
+
+.settings-update__heading,
+.settings-update__download-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settings-update__heading > strong,
+.settings-update__ready > strong {
+  color: var(--color-text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.settings-update__version {
+  margin: 7px 0 0;
+  color: var(--color-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-update__version > span {
+  padding: 0 5px;
+  color: var(--color-subtle);
+}
+
+.settings-update__metadata {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  margin-top: 6px;
+}
+
+.settings-update__notes {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border-soft);
+}
+
+.settings-update__notes > span {
+  color: var(--color-subtle);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.settings-update__notes pre {
+  max-height: 150px;
+  overflow: auto;
+  margin: 6px 0 0;
+  color: var(--color-muted);
+  font: inherit;
+  font-size: 10px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.settings-update__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin-top: 13px;
+}
+
+.settings-update__actions .primary-button {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 7px;
+}
+
+.settings-update__actions .text-button {
+  min-height: 32px;
+}
+
+.settings-update__download {
+  display: grid;
+  gap: 7px;
+  margin-top: 13px;
+  color: var(--color-muted);
+  font-size: 10px;
+}
+
+.settings-update__download-heading > strong {
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-update__progress {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: var(--color-border-soft);
+}
+
+.settings-update__progress > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-accent);
+  transition: width 160ms ease-out;
+}
+
+.settings-update__progress:not([aria-valuenow]) > span {
+  width: 30%;
+  animation: update-progress-indeterminate 1.2s ease-in-out infinite alternate;
+}
+
+.settings-update__download-size {
+  color: var(--color-subtle);
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-update__ready {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  margin-top: 13px;
+}
+
+.settings-update__installing {
+  margin: 10px 0 0;
+  color: var(--color-muted);
+  font-size: 10px;
+}
+
+.settings-update__skip {
+  margin-top: 12px;
+  padding: 4px 0;
+  color: var(--color-subtle);
+  font-size: 10px;
+}
+
+.settings-update__result,
+.settings-update__error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 10px 0 0 44px;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.settings-update__result {
+  color: var(--color-accent);
+}
+
+.settings-update__result > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.settings-update__error {
+  display: grid;
+  gap: 3px;
+  color: var(--color-danger);
+}
+
+.settings-update__error > strong {
+  font-size: 10px;
+}
+
+.settings-update__error > span {
+  color: var(--color-muted);
+}
+
+.settings-update__error.is-critical > span:last-child {
+  color: var(--color-danger);
+}
+
+.settings-update__spin {
+  animation: settings-update-spin 1s linear infinite;
+}
+
+@keyframes settings-update-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes update-progress-indeterminate {
+  from { transform: translateX(-35%); }
+  to { transform: translateX(240%); }
 }
 
 .settings-dialog__error {
@@ -5256,4 +5521,24 @@ dialog.torrent-details::backdrop {
     align-items: flex-start;
     flex-direction: column;
   }
+}
+
+:root[data-color-scheme="light"] .settings-update__details {
+  background: #f8faf8;
+}
+
+:root[data-color-scheme="light"] .settings-update__badge {
+  background: #f2f6f2;
+}
+
+:root[data-color-scheme="light"] .settings-update__progress {
+  background: #dfe7e0;
+}
+
+:root[data-color-scheme="light"] .toast-message--info > svg:first-child {
+  color: #4675a5;
+}
+
+:root[data-color-scheme="light"] .toast-message--error > svg:first-child {
+  color: var(--color-danger);
 }

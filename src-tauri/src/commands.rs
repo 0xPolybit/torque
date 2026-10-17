@@ -12,7 +12,7 @@ use crate::torrent::{
     AppPreferences, DownloadDirectory, QueueMove, TorrentBandwidthDirection, TorrentCategory,
     TorrentCategoryEdit, TorrentDetails, TorrentFilePriorityUpdate, TorrentFileSelection,
     TorrentLibraryMetadata, TorrentPreview, TorrentService, TorrentStatus, TorrentTag,
-    TorrentTagEdit,
+    TorrentTagEdit, UpdatePreferences,
 };
 
 #[derive(Serialize)]
@@ -54,6 +54,16 @@ pub async fn set_app_preferences(
     service
         .set_preferences(preferences)
         .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn set_update_preferences(
+    service: State<'_, TorrentService>,
+    preferences: UpdatePreferences,
+) -> Result<UpdatePreferences, String> {
+    service
+        .set_update_preferences(preferences)
         .map_err(|error| error.to_string())
 }
 

@@ -10,6 +10,15 @@ export interface AppInfo {
 
 export type ThemePreference = "system" | "dark" | "light";
 
+export interface UpdatePreferences {
+  automaticCheckEnabled: boolean;
+  checkFrequencyHours: number;
+  automaticDownload: boolean;
+  lastSuccessfulCheckAt: number | null;
+  deferredVersion: string | null;
+  skippedVersion: string | null;
+}
+
 export interface AppPreferences {
   resumeUnfinishedOnStartup: boolean;
   startDownloadsAutomatically: boolean;
@@ -21,6 +30,7 @@ export interface AppPreferences {
   confirmBeforeRemovingTorrent: boolean;
   confirmBeforeDeletingFiles: boolean;
   theme: ThemePreference;
+  updates: UpdatePreferences;
 }
 
 export interface TorrentCategory {
@@ -185,6 +195,10 @@ export function getAppPreferences(): Promise<AppPreferences> {
 
 export function setAppPreferences(preferences: AppPreferences): Promise<AppPreferences> {
   return invoke<AppPreferences>("set_app_preferences", { preferences });
+}
+
+export function setUpdatePreferences(preferences: UpdatePreferences): Promise<UpdatePreferences> {
+  return invoke<UpdatePreferences>("set_update_preferences", { preferences });
 }
 
 export function setWindowTheme(theme: ThemePreference): Promise<void> {

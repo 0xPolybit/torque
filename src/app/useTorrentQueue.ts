@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import type { ToastMessage, ToastTone } from "../components/ToastRegion";
 import {
   discardTorrentPreview as discardDesktopTorrentPreview,
   discardTorrentFileSelection,
@@ -28,11 +29,13 @@ import {
   selectDownloadDirectory,
   selectTorrentFile as selectNativeTorrentFile,
   setAppPreferences,
+  setUpdatePreferences as setDesktopUpdatePreferences,
   setTorrentBandwidthLimit as setDesktopTorrentBandwidthLimit,
   setWindowTheme,
   updateTorrentFilePriorities as updateDesktopTorrentFilePriorities,
   startInspectedTorrent as startDesktopInspectedTorrent,
   type AppPreferences,
+  type UpdatePreferences,
   type TorrentActionState,
   type TorrentBandwidthDirection,
   type TorrentControlAction,
@@ -144,12 +147,23 @@ export function useTorrentQueue(enabled: boolean) {
     confirmBeforeRemovingTorrent: true,
     confirmBeforeDeletingFiles: true,
     theme: "dark",
+    updates: {
+      automaticCheckEnabled: true,
+      checkFrequencyHours: 24,
+      automaticDownload: true,
+      lastSuccessfulCheckAt: null,
+      deferredVersion: null,
+      skippedVersion: null,
+    },
   });
   const [preferencesLoaded, setPreferencesLoaded] = useState(false);
   const [savingPreference, setSavingPreference] = useState(false);
   const [savingLibraryMetadata, setSavingLibraryMetadata] = useState(false);
   const [torrentActions, setTorrentActions] = useState<Record<number, TorrentActionState>>({});
-  const [toast, setToast] = useState<{ id: number; message: string } | null>(null);
+  const [toast, setToast] = useState<ToastMessage | null>(null);
+  const notify = useCallback((message: string, tone: ToastTone = "success") => {
+    setToast({ id: Date.now(), message, tone });
+  }, []);
   const dismissToast = useCallback(() => setToast(null), []);
 
   useEffect(() => {
@@ -247,7 +261,7 @@ export function useTorrentQueue(enabled: boolean) {
     try {
       const saved = await setAppPreferences({ ...preferences, ...changes });
       setPreferences(saved);
-      await refreshTorrents();
+      if (!Object.keys(changes).every((key) => key === "updates")) await refreshTorrents();
       try {
         await setWindowTheme(saved.theme);
       } catch (cause) {
@@ -259,6 +273,19 @@ export function useTorrentQueue(enabled: boolean) {
       setSavingPreference(false);
     }
   }, [preferences, refreshTorrents]);
+
+  const updateUpdatePreferences = useCallback(async (changes: Partial<UpdatePreferences>) => {
+    setSavingPreference(true);
+    setError("");
+    try {
+      const saved = await setDesktopUpdatePreferences({ ...preferences.updates, ...changes });
+      setPreferences((current) => ({ ...current, updates: saved }));
+    } catch (cause) {
+      setError(describeError(cause));
+    } finally {
+      setSavingPreference(false);
+    }
+  }, [preferences.updates]);
 
   const runLibraryMutation = useCallback(async (
     operation: () => Promise<unknown>,
@@ -450,6 +477,7 @@ export function useTorrentQueue(enabled: boolean) {
     savingPreference,
     savingLibraryMetadata,
     updatePreferences,
+    updateUpdatePreferences,
     createCategory,
     renameCategory,
     deleteCategory,
@@ -460,6 +488,7 @@ export function useTorrentQueue(enabled: boolean) {
     torrentActions,
     refreshTorrents,
     toast,
+    notify,
     dismissToast,
     chooseDirectory,
     chooseTorrentFile,

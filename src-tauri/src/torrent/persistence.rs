@@ -26,6 +26,31 @@ pub enum ThemePreference {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(default)]
+pub struct UpdatePreferences {
+    pub automatic_check_enabled: bool,
+    pub check_frequency_hours: u64,
+    pub automatic_download: bool,
+    pub last_successful_check_at: Option<u64>,
+    pub deferred_version: Option<String>,
+    pub skipped_version: Option<String>,
+}
+
+impl Default for UpdatePreferences {
+    fn default() -> Self {
+        Self {
+            automatic_check_enabled: true,
+            check_frequency_hours: 24,
+            automatic_download: true,
+            last_successful_check_at: None,
+            deferred_version: None,
+            skipped_version: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(default)]
 pub struct AppPreferences {
     pub resume_unfinished_on_startup: bool,
     pub start_downloads_automatically: bool,
@@ -37,6 +62,7 @@ pub struct AppPreferences {
     pub confirm_before_removing_torrent: bool,
     pub confirm_before_deleting_files: bool,
     pub theme: ThemePreference,
+    pub updates: UpdatePreferences,
 }
 
 impl Default for AppPreferences {
@@ -52,6 +78,7 @@ impl Default for AppPreferences {
             confirm_before_removing_torrent: true,
             confirm_before_deleting_files: true,
             theme: ThemePreference::Dark,
+            updates: UpdatePreferences::default(),
         }
     }
 }
@@ -316,6 +343,15 @@ impl ApplicationPersistence {
             .lock()
             .map_err(|_| "state lock poisoned".to_string())?;
         state.preferences = preferences;
+        self.write_locked(&state)
+    }
+
+    pub fn set_update_preferences(&self, preferences: UpdatePreferences) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "state lock poisoned".to_string())?;
+        state.preferences.updates = preferences;
         self.write_locked(&state)
     }
 
@@ -1091,6 +1127,14 @@ mod tests {
                 resume_unfinished_on_startup: false,
                 start_downloads_automatically: false,
                 theme: ThemePreference::Light,
+                updates: UpdatePreferences {
+                    check_frequency_hours: 12,
+                    automatic_download: false,
+                    last_successful_check_at: Some(1_791_000_000),
+                    deferred_version: Some("0.3.0".to_string()),
+                    skipped_version: Some("0.2.9".to_string()),
+                    ..UpdatePreferences::default()
+                },
                 ..AppPreferences::default()
             })
             .expect("save preference");
@@ -1102,6 +1146,43 @@ mod tests {
         assert!(!preferences.resume_unfinished_on_startup);
         assert!(!preferences.start_downloads_automatically);
         assert_eq!(preferences.theme, ThemePreference::Light);
+        assert!(preferences.updates.automatic_check_enabled);
+        assert_eq!(preferences.updates.check_frequency_hours, 12);
+        assert!(!preferences.updates.automatic_download);
+        assert_eq!(
+            preferences.updates.last_successful_check_at,
+            Some(1_791_000_000)
+        );
+        assert_eq!(
+            preferences.updates.deferred_version.as_deref(),
+            Some("0.3.0")
+        );
+        assert_eq!(
+            preferences.updates.skipped_version.as_deref(),
+            Some("0.2.9")
+        );
+    }
+
+    #[test]
+    fn update_preferences_can_be_saved_without_replacing_general_preferences() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let path = temp.path().join("application-state.json");
+        let persistence = ApplicationPersistence::open(&path);
+        persistence
+            .set_update_preferences(UpdatePreferences {
+                automatic_check_enabled: false,
+                check_frequency_hours: 6,
+                ..UpdatePreferences::default()
+            })
+            .expect("save update preferences");
+        drop(persistence);
+
+        let restored = ApplicationPersistence::open(path);
+        let preferences = restored.preferences().expect("read preferences");
+        assert!(preferences.start_downloads_automatically);
+        assert_eq!(preferences.maximum_simultaneous_downloads, 3);
+        assert!(!preferences.updates.automatic_check_enabled);
+        assert_eq!(preferences.updates.check_frequency_hours, 6);
     }
 
     #[test]
@@ -1198,6 +1279,8 @@ mod tests {
         assert!(!preferences.resume_unfinished_on_startup);
         assert!(preferences.start_downloads_automatically);
         assert_eq!(preferences.theme, ThemePreference::Dark);
+        assert!(preferences.updates.automatic_check_enabled);
+        assert_eq!(preferences.updates.check_frequency_hours, 24);
     }
 
     #[test]

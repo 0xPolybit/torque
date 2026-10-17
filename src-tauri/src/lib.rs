@@ -85,6 +85,7 @@ pub fn run() {
             commands::get_app_info,
             commands::get_app_preferences,
             commands::set_app_preferences,
+            commands::set_update_preferences,
             commands::get_download_directories,
             commands::select_download_directory,
             commands::select_torrent_file,
