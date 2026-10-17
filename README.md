@@ -34,6 +34,7 @@ Torque is a cross-platform desktop BitTorrent client built with a Tauri shell, a
 - [Queue, bandwidth, and shortcuts](#queue-bandwidth-and-shortcuts)
 - [Categories, tags, and filters](#categories-tags-and-filters)
 - [Architecture](#architecture)
+- [Updater architecture](#updater-architecture)
 - [Security](#security)
 - [Project structure](#project-structure)
 - [Marketing and documentation website](#marketing-and-documentation-website)
@@ -82,7 +83,7 @@ Screenshots are not available yet. They will be added here when captured.
 - [`librqbit` 9.0.1](https://docs.rs/librqbit/9.0.1/librqbit/)
 - React 19, TypeScript 5, and Vite 7
 - pnpm 11.19.0
-- Tauri dialog and opener plugins, Lucide icons, and Inter Variable
+- Tauri dialog, opener, updater, and process plugins, Lucide icons, and Inter Variable
 - Rust `reqwest` with rustls, `async-trait`, and `tokio-util` for provider HTTP calls and cancellation
 
 ## Installation
@@ -142,6 +143,8 @@ pnpm tauri:build
 ```
 
 Tauri runs the frontend production build as part of this command. Frontend assets are written to `dist/`; native binaries and installers are written below `src-tauri/target/`. Build on each target operating system to create its native release packages.
+
+Updater artifact creation is enabled. Release builds need `TAURI_SIGNING_PRIVATE_KEY` configured (and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` when the key is password-protected). See [Updater architecture](#updater-architecture) before building releases. Plain frontend builds and development runs do not need signing credentials.
 
 ### Build a Windows `.exe` installer
 
@@ -279,7 +282,36 @@ To add another authorized source, implement `SearchProvider` in `src-tauri/src/d
 
 ## Security
 
-The frontend does not receive unrestricted filesystem access. Native file and folder pickers are invoked by Rust, and selected folders are represented to the frontend by opaque IDs. The narrow Tauri capability grants only the window theme permission required by the appearance setting. Discovery requests are sent by the Rust provider adapter to its fixed official API host; provider data is treated as untrusted text. Search results cannot invoke torrent start commands: they must pass through the existing inspection and explicit-start flow. Before starting, Rust rejects empty, dot, parent, rooted, drive-prefixed, separator-injected, and control-character path components, and checks existing output-path symlinks remain inside the canonical destination. Opening a completed download's folder uses the native opener plugin; arbitrary command execution is not exposed.
+The frontend does not receive unrestricted filesystem access. Native file and folder pickers are invoked by Rust, and selected folders are represented to the frontend by opaque IDs. The narrow Tauri capability grants only the window theme, updater, and process restart permissions required by app features. Discovery requests are sent by the Rust provider adapter to its fixed official API host; provider data is treated as untrusted text. Search results cannot invoke torrent start commands: they must pass through the existing inspection and explicit-start flow. Before starting, Rust rejects empty, dot, parent, rooted, drive-prefixed, separator-injected, and control-character path components, and checks existing output-path symlinks remain inside the canonical destination. Opening a completed download's folder uses the native opener plugin; arbitrary command execution is not exposed.
+
+## Updater architecture
+
+Torque uses the official Tauri 2 updater plugin (`tauri-plugin-updater` and `@tauri-apps/plugin-updater`). Rust initializes the plugin in the desktop shell; the root desktop frontend wraps its JavaScript API in [`src/lib/updateService.ts`](src/lib/updateService.ts), which returns a normalized `UpdateInfo` model for the current version, release details, availability, download progress, and errors. The service classifies network, GitHub, manifest/version, and signature failures into useful messages and logs only the operation and error category. Raw request errors, URLs, keys, and passwords are not included in updater logs.
+
+The configured static manifest endpoint is:
+
+```text
+https://github.com/0xPolybit/torque/releases/latest/download/latest.json
+```
+
+Release workflows must publish a Tauri `latest.json` manifest, each platform's signed updater artifact, and its `.sig` signature as GitHub Release assets. The public verification key is embedded in `src-tauri/tauri.conf.json`; `requireSignedVersion` is enabled so the artifact signature must bind to the version announced in the manifest. This prevents a manifest from advertising one version while pairing it with a different validly signed artifact. Sign future artifacts with the same private key and a current Tauri CLI that records signed-version metadata.
+
+The signing key pair is not committed. This maintenance checkout's matching private key is stored in the ignored `src-tauri/.private/updater.key` file; a fresh clone will not have it. Provision the same key from a secure release secret store before building updates for existing clients. Configure release builders or GitHub Actions with:
+
+- `TAURI_SIGNING_PRIVATE_KEY`: a protected private-key file path or the key contents stored as a CI secret.
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the key password, stored as a CI secret when the key is password-protected; omit or set it to an empty value for an unencrypted key.
+
+Example release build in this checkout's PowerShell:
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY = (Resolve-Path "src-tauri\.private\updater.key").Path
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "<key password, if set>"
+pnpm tauri:build
+```
+
+For an unencrypted key, set the password variable to an empty string. Never place private key contents or passwords in source files or `.env` files. Production bundling creates updater artifacts because `bundle.createUpdaterArtifacts` is `true`; development and plain Vite runs do not require signing credentials. Update checks explicitly report that they are disabled in development builds. The current UI does not automatically check, download, or install updates; those actions are exposed through the service for a later user-controlled update flow.
+
+The `default` capability grants the updater permissions needed for explicit check, download, and install calls, plus only `process:allow-restart` for the official relaunch API. It does not grant shell execution or general process permissions.
 
 ## Project structure
 
@@ -296,7 +328,7 @@ src/
   TorrentDetailsDialog.tsx Five-tab details view backed by queue snapshots and an on-demand details command
   SettingsDialog.tsx      Persisted queue, bandwidth, appearance, confirmation, and tray preferences
   RemoveTorrentDialog.tsx Explicit keep-files or delete-files confirmation
-  lib/                    Typed Tauri transfer, discovery, and preference command wrappers
+  lib/                    Typed Tauri command wrappers and the normalized updater service
   styles.css              Desktop layout, themes, controls, and responsive rules
 src-tauri/
   capabilities/           Narrow Tauri window capability

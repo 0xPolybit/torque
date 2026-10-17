@@ -3,5 +3,11 @@
   "identifier": "default",
   "description": "Default permissions for Torque's main desktop window.",
   "windows": ["main"],
-  "permissions": ["core:window:allow-set-theme"]
+  "permissions": [
+    "core:window:allow-set-theme",
+    "updater:allow-check",
+    "updater:allow-download",
+    "updater:allow-install",
+    "process:allow-restart"
+  ]
 }
