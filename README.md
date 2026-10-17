@@ -3,7 +3,7 @@
   <h1>Torque</h1>
   <p>A modern desktop app for managing BitTorrent downloads.</p>
   <p>
-    <a href="https://github.com/0xPolybit/torque/releases"><img alt="Version 0.2.1" src="https://img.shields.io/badge/version-0.2.1-8bcf6a?style=flat-square" /></a>
+    <a href="https://github.com/0xPolybit/torque/releases"><img alt="Latest GitHub release" src="https://img.shields.io/github/v/release/0xPolybit/torque?style=flat-square&color=8bcf6a" /></a>
     <a href="https://v2.tauri.app/"><img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white&style=flat-square" /></a>
     <a href="https://react.dev/"><img alt="React 19" src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black&style=flat-square" /></a>
     <a href="https://www.rust-lang.org/"><img alt="Rust 1.90 or newer" src="https://img.shields.io/badge/Rust-1.90%2B-orange?logo=rust&logoColor=white&style=flat-square" /></a>
@@ -36,6 +36,7 @@ Torque is a cross-platform desktop BitTorrent client built with a Tauri shell, a
 - [Architecture](#architecture)
 - [Updater architecture](#updater-architecture)
 - [GitHub Releases pipeline](#github-releases-pipeline)
+- [Release process](#release-process)
 - [Security](#security)
 - [Project structure](#project-structure)
 - [Marketing and documentation website](#marketing-and-documentation-website)
@@ -298,20 +299,12 @@ https://github.com/0xPolybit/torque/releases/latest/download/latest.json
 
 The [GitHub Releases pipeline](#github-releases-pipeline) publishes a Tauri `latest.json` manifest, each platform's signed updater artifact, and its `.sig` signature as GitHub Release assets. The public verification key is embedded in `src-tauri/tauri.conf.json`; `requireSignedVersion` is enabled so the artifact signature must bind to the version announced in the manifest. This prevents a manifest from advertising one version while pairing it with a different validly signed artifact. Sign future artifacts with the same private key and a current Tauri CLI that records signed-version metadata.
 
-The signing key pair is not committed. This maintenance checkout's matching private key is stored in the ignored `src-tauri/.private/updater.key` file; a fresh clone will not have it. Provision the same key from a secure release secret store before building updates for existing clients. Configure release builders or GitHub Actions with:
+The public verification key is committed as updater configuration; its matching private key is never committed or required as a local file. Keep the existing private signing identity in a secure maintainer vault: losing it can prevent existing installations from accepting future updates. Do not generate a replacement key for a routine release. `.gitignore` excludes `src-tauri/.private/` for maintainers who temporarily need local key storage. GitHub Actions uses these repository secrets:
 
-- `TAURI_SIGNING_PRIVATE_KEY`: a protected private-key file path or the key contents stored as a CI secret.
-- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the key password, stored as a CI secret when the key is password-protected; omit or set it to an empty value for an unencrypted key.
+- `TAURI_SIGNING_PRIVATE_KEY`: the protected private key contents.
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: its password, or an empty secret if the established key is unencrypted.
 
-Example release build in this checkout's PowerShell:
-
-```powershell
-$env:TAURI_SIGNING_PRIVATE_KEY = (Resolve-Path "src-tauri\.private\updater.key").Path
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "<key password, if set>"
-pnpm tauri:build
-```
-
-For an unencrypted key, set the password variable to an empty string. Never place private key contents or passwords in source files or `.env` files. Production bundling creates updater artifacts because `bundle.createUpdaterArtifacts` is `true`; development and plain Vite runs do not require signing credentials. Update checks explicitly report that they are disabled in development builds.
+Never place private key contents or passwords in source files, tests, `.env` files, or build logs. Production bundling creates updater artifacts because `bundle.createUpdaterArtifacts` is `true`; development and plain Vite runs do not require signing credentials. Update checks explicitly report that they are disabled in development builds. See [docs/RELEASING.md](docs/RELEASING.md) for key provisioning and release instructions.
 
 The Settings dialog's **Updates** section shows the current version and stable channel, the last successful check, automatic-check frequency, automatic download, and the fixed **Ask before installing** behavior. A due check runs a few seconds after desktop startup without blocking the window or opening a dialog. Successful check time is persisted with application preferences. Update settings, deferred version, and skipped version live in `application-state.json` beside the torrent preferences; raw release data and signing credentials are not persisted.
 
@@ -327,7 +320,7 @@ The `default` capability grants the updater permissions needed for explicit chec
 
 The desktop release workflow is [`.github/workflows/release.yml`](.github/workflows/release.yml). It builds the root Tauri application with the official `tauri-apps/tauri-action@v1`; it does not build the separate marketing site in `frontend/`.
 
-Production releases use stable `vMAJOR.MINOR.PATCH` tags, such as `v0.2.2`. Pushing a version tag starts the workflow. A maintainer can also run **Actions → Desktop release → Run workflow** and supply an existing version tag. The workflow checks that the tag matches `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`. Prerelease tags (for example, `v0.3.0-beta.1`) are rejected. Pushes to `main` do not publish releases.
+Production releases use stable `vMAJOR.MINOR.PATCH` tags, such as `v0.2.2`. Pushing a version tag starts the workflow. A maintainer can also run **Actions → Desktop release → Run workflow** and supply an existing version tag. The workflow checks that the tag matches `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and Torque's entry in `src-tauri/Cargo.lock`. Prerelease tags (for example, `v0.3.0-beta.1`) are rejected. Pushes to `main` do not publish releases.
 
 The workflow builds these supported release targets:
 
@@ -346,7 +339,11 @@ The workflow also uses the automatically provided `GITHUB_TOKEN` with `contents:
 
 No Apple Developer signing or notarization secrets are configured in this repository. The macOS packages are therefore not Apple-notarized; macOS may show its normal first-launch security warning. Windows signing is likewise not configured, so Windows may show its unsigned-publisher warning.
 
-To publish a release, update the three application version sources together, commit and push that version bump, then push the matching stable tag (for example, `git tag v0.2.2` followed by `git push origin v0.2.2`). Alternatively, dispatch the workflow manually with that already-pushed tag. Review the completed draft release and assets in GitHub; the workflow publishes it automatically only after all four platform targets and the manifest pass validation. Published stable releases are served to installed apps from `https://github.com/0xPolybit/torque/releases/latest/download/latest.json`.
+Use [`docs/RELEASING.md`](docs/RELEASING.md) for the full secure release checklist. `pnpm release:preflight` validates the next patch release; `pnpm release:patch`, `pnpm release:minor`, or `pnpm release:major` updates all four version sources, creates a release commit, and tags it locally. The script never pushes. After review, push `main` and the matching `vMAJOR.MINOR.PATCH` tag. Alternatively, dispatch the workflow manually with that already-pushed tag. Review the completed draft release and assets in GitHub; the workflow publishes it only after all four platform targets and the manifest pass validation. Published stable releases are served to installed apps from `https://github.com/0xPolybit/torque/releases/latest/download/latest.json`.
+
+## Release process
+
+The release scripts require a clean main checkout, keep the desktop version in package.json, Tauri config, Cargo manifest, and Cargo lockfile aligned, and validate the updater configuration and prospective tag. They create a local commit and stable version tag, then stop for explicit review and push. See [docs/RELEASING.md](docs/RELEASING.md) for signing-key safety, required GitHub Actions secrets, exact commands, and troubleshooting.
 
 ## Project structure
 
@@ -395,6 +392,11 @@ DESIGN.md                 Visual-system notes
 PRODUCT.md                Product context
 package.json              Frontend scripts and dependencies
 pnpm-lock.yaml            Pinned frontend dependency graph
+scripts/
+  release.mjs             Version validation, release preflight, and local bump/commit/tag automation
+  release.test.mjs        Release tooling tests without signing credentials
+docs/RELEASING.md         Signing-key guidance and end-to-end release checklist
+CHANGELOG.md              Unreleased notes and release change history
 ```
 
 ## Marketing and documentation website
