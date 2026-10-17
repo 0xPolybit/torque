@@ -35,6 +35,7 @@ Torque is a cross-platform desktop BitTorrent client built with a Tauri shell, a
 - [Categories, tags, and filters](#categories-tags-and-filters)
 - [Architecture](#architecture)
 - [Updater architecture](#updater-architecture)
+- [GitHub Releases pipeline](#github-releases-pipeline)
 - [Security](#security)
 - [Project structure](#project-structure)
 - [Marketing and documentation website](#marketing-and-documentation-website)
@@ -295,7 +296,7 @@ The configured static manifest endpoint is:
 https://github.com/0xPolybit/torque/releases/latest/download/latest.json
 ```
 
-Release workflows must publish a Tauri `latest.json` manifest, each platform's signed updater artifact, and its `.sig` signature as GitHub Release assets. The public verification key is embedded in `src-tauri/tauri.conf.json`; `requireSignedVersion` is enabled so the artifact signature must bind to the version announced in the manifest. This prevents a manifest from advertising one version while pairing it with a different validly signed artifact. Sign future artifacts with the same private key and a current Tauri CLI that records signed-version metadata.
+The [GitHub Releases pipeline](#github-releases-pipeline) publishes a Tauri `latest.json` manifest, each platform's signed updater artifact, and its `.sig` signature as GitHub Release assets. The public verification key is embedded in `src-tauri/tauri.conf.json`; `requireSignedVersion` is enabled so the artifact signature must bind to the version announced in the manifest. This prevents a manifest from advertising one version while pairing it with a different validly signed artifact. Sign future artifacts with the same private key and a current Tauri CLI that records signed-version metadata.
 
 The signing key pair is not committed. This maintenance checkout's matching private key is stored in the ignored `src-tauri/.private/updater.key` file; a fresh clone will not have it. Provision the same key from a secure release secret store before building updates for existing clients. Configure release builders or GitHub Actions with:
 
@@ -321,6 +322,31 @@ When an update is available, the Settings icon receives a small indicator and th
 Manual checks show an up-to-date version, release version/date/notes and approximate size when available, or a normalized error with a retry path. Update bytes are verified by the official updater plugin before installation. Signature failures never offer a bypass or an install-anyway action. Network and GitHub errors are retryable; manifest/version failures, signature failures, disk-space problems, permission errors, interrupted downloads, installation failures, and restart failures are surfaced without terminating the transfer session. On Windows, the official installer handles the restart; other desktop platforms use the official process plugin's relaunch capability after install.
 
 The `default` capability grants the updater permissions needed for explicit check, download, and install calls, plus only `process:allow-restart` for the official relaunch API. It does not grant shell execution or general process permissions.
+
+## GitHub Releases pipeline
+
+The desktop release workflow is [`.github/workflows/release.yml`](.github/workflows/release.yml). It builds the root Tauri application with the official `tauri-apps/tauri-action@v1`; it does not build the separate marketing site in `frontend/`.
+
+Production releases use stable `vMAJOR.MINOR.PATCH` tags, such as `v0.2.2`. Pushing a version tag starts the workflow. A maintainer can also run **Actions → Desktop release → Run workflow** and supply an existing version tag. The workflow checks that the tag matches `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`. Prerelease tags (for example, `v0.3.0-beta.1`) are rejected. Pushes to `main` do not publish releases.
+
+The workflow builds these supported release targets:
+
+- Windows x64 (`x86_64-pc-windows-msvc`): NSIS `.exe` and MSI `.msi` installers.
+- macOS Apple Silicon (`aarch64-apple-darwin`) and Intel (`x86_64-apple-darwin`): `.dmg` and updater `.app.tar.gz` artifacts.
+- Linux x64 (`x86_64-unknown-linux-gnu`): Debian `.deb`, RPM, and AppImage packages, including the signed updater artifact.
+
+Each platform job uses `tauri-action` to build and sign its artifacts and update the generated `latest.json`. Jobs run one at a time so the action can safely merge platform entries into the draft manifest. A final job checks the required platform keys, signatures, manifest URLs, and installers before publishing the draft as a stable GitHub Release. If a build or validation fails, any created release stays a draft and is not served as the latest stable update. `uploadUpdaterJson: true` is the current Tauri Action option used to create the manifest from actual signed build artifacts; the repository does not maintain a static updater manifest.
+
+Configure these repository Actions secrets before publishing:
+
+- `TAURI_SIGNING_PRIVATE_KEY`: the private updater signing key that matches the public key embedded in `src-tauri/tauri.conf.json`.
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the key password, or an empty secret for an unencrypted key.
+
+The workflow also uses the automatically provided `GITHUB_TOKEN` with `contents: write` permission to create a draft release, upload bundles/signatures/`latest.json`, validate them, and publish the release. Signing secrets are passed only to build steps and are never uploaded as artifacts. Do not rotate the updater key without coordinating a new public key with already installed clients.
+
+No Apple Developer signing or notarization secrets are configured in this repository. The macOS packages are therefore not Apple-notarized; macOS may show its normal first-launch security warning. Windows signing is likewise not configured, so Windows may show its unsigned-publisher warning.
+
+To publish a release, update the three application version sources together, commit and push that version bump, then push the matching stable tag (for example, `git tag v0.2.2` followed by `git push origin v0.2.2`). Alternatively, dispatch the workflow manually with that already-pushed tag. Review the completed draft release and assets in GitHub; the workflow publishes it automatically only after all four platform targets and the manifest pass validation. Published stable releases are served to installed apps from `https://github.com/0xPolybit/torque/releases/latest/download/latest.json`.
 
 ## Project structure
 
@@ -362,6 +388,8 @@ frontend/
   package.json             Independent website development/build scripts
   package-lock.json        Reproducible website dependency lock
 README.md                 Project and developer guide
+.github/workflows/release.yml
+                          Signed cross-platform desktop release pipeline
 frontend/README.md        Standalone marketing and documentation website guide
 DESIGN.md                 Visual-system notes
 PRODUCT.md                Product context
