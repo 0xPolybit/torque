@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 export interface AppInfo {
   name: string;
   version: string;
+  updatedFromVersion: string | null;
   platform: string;
   defaultDownloadDirectory: string | null;
 }
@@ -187,6 +188,14 @@ export interface TorrentStatus {
 
 export function getAppInfo(): Promise<AppInfo> {
   return invoke<AppInfo>("get_app_info");
+}
+
+export function prepareUpdateInstall(): Promise<void> {
+  return invoke<void>("prepare_update_install");
+}
+
+export function cancelUpdateInstall(): Promise<void> {
+  return invoke<void>("cancel_update_install");
 }
 
 export function getAppPreferences(): Promise<AppPreferences> {

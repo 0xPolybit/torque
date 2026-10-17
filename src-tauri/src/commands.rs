@@ -20,12 +20,13 @@ use crate::torrent::{
 pub struct AppInfo {
     name: String,
     version: String,
+    updated_from_version: Option<String>,
     platform: &'static str,
     default_download_directory: Option<String>,
 }
 
 #[tauri::command]
-pub fn get_app_info(app: AppHandle) -> AppInfo {
+pub fn get_app_info(app: AppHandle, service: State<'_, TorrentService>) -> AppInfo {
     let package = app.package_info();
     let download_directory = app
         .path()
@@ -36,9 +37,26 @@ pub fn get_app_info(app: AppHandle) -> AppInfo {
     AppInfo {
         name: package.name.clone(),
         version: package.version.to_string(),
+        updated_from_version: service.updated_from_version().ok().flatten(),
         platform: std::env::consts::OS,
         default_download_directory: download_directory,
     }
+}
+
+#[tauri::command]
+pub async fn prepare_update_install(service: State<'_, TorrentService>) -> Result<(), String> {
+    service
+        .prepare_update_install()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn cancel_update_install(service: State<'_, TorrentService>) -> Result<(), String> {
+    service
+        .cancel_update_install()
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

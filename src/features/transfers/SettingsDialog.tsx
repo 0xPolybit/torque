@@ -345,7 +345,7 @@ export function SettingsDialog({
           <button
             className="text-button settings-update__check"
             type="button"
-            disabled={updateInfo.checking || updateInfo.downloading || updateInfo.installing || savingPreference}
+            disabled={updateInfo.checking || updateInfo.downloading || updateInfo.preparingToInstall || updateInfo.installing || savingPreference}
             onClick={() => void onCheckForUpdates()}
           >
             <RefreshCw size={14} className={updateInfo.checking ? "settings-update__spin" : undefined} aria-hidden="true" />
@@ -387,6 +387,7 @@ export function SettingsDialog({
               </div>
             )}
 
+            {updateInfo.preparingToInstall && <p className="settings-update__installing" role="status">Preparing to update… Saving download state…</p>}
             {updateInfo.installing && <p className="settings-update__installing" role="status">Installing update…</p>}
             {updateInfo.downloading && (
               <div className="settings-update__download" role="status" aria-live="polite">
@@ -401,17 +402,17 @@ export function SettingsDialog({
               </div>
             )}
 
-            {updateInfo.downloaded && updateInfo.errorCategory !== "signature" && !updateInfo.restartRequired && !updateInfo.installing && (
+            {updateInfo.downloaded && updateInfo.errorCategory !== "signature" && !updateInfo.restartRequired && !updateInfo.preparingToInstall && !updateInfo.installing && (
               <div className="settings-update__ready" role="status">
                 <strong>Update ready to install</strong>
                 <div className="settings-update__actions">
-                  <button className="primary-button" type="button" disabled={savingPreference} onClick={() => void onInstallUpdate()}>Restart &amp; Update</button>
+                  <button className="primary-button" type="button" disabled={savingPreference} onClick={() => void onInstallUpdate()}>{updateInfo.error ? "Retry Restart & Update" : "Restart & Update"}</button>
                   <button className="text-button" type="button" onClick={() => void onDeferUpdate()}>Install Later</button>
                 </div>
               </div>
             )}
 
-            {!updateInfo.downloaded && !updateInfo.downloading && !updateInfo.installing && !updateInfo.restartRequired && (
+            {!updateInfo.downloaded && !updateInfo.downloading && !updateInfo.preparingToInstall && !updateInfo.installing && !updateInfo.restartRequired && (
               <div className="settings-update__actions">
                 <button className="primary-button" type="button" disabled={updateInfo.checking || savingPreference} onClick={() => void onDownloadUpdate()}>
                   <Download size={14} aria-hidden="true" /> Download Update

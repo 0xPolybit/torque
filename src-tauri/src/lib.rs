@@ -28,6 +28,10 @@ pub fn run() {
                 application_state_path,
             ))
             .map_err(|error| std::io::Error::other(error.to_string()))?;
+            let current_version = app.package_info().version.to_string();
+            if let Err(error) = service.record_current_version(&current_version) {
+                eprintln!("Could not save the current application version: {error}");
+            }
             app.manage(service);
             app.manage(discovery::SearchService::new());
 
@@ -83,6 +87,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_app_info,
+            commands::prepare_update_install,
+            commands::cancel_update_install,
             commands::get_app_preferences,
             commands::set_app_preferences,
             commands::set_update_preferences,
@@ -125,6 +131,18 @@ pub fn run() {
             commands::get_torrent_search_details,
             commands::get_torrent_search_source
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run Torque desktop shell");
+        .build(tauri::generate_context!())
+        .expect("failed to build Torque desktop shell")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                if let Some(service) = app_handle.try_state::<torrent::TorrentService>() {
+                    if let Err(error) = tauri::async_runtime::block_on(service.graceful_shutdown())
+                    {
+                        eprintln!(
+                            "Could not completely flush the torrent session before exit: {error}"
+                        );
+                    }
+                }
+            }
+        });
 }

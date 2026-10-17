@@ -149,6 +149,8 @@ pub struct PersistedTorrent {
     pub added_at: u64,
     pub completed_at: Option<u64>,
     #[serde(default)]
+    pub resume_after_update: bool,
+    #[serde(default)]
     pub source_type: TorrentSourceType,
     #[serde(default)]
     pub selected_file_indices: Option<Vec<usize>>,
@@ -232,6 +234,8 @@ impl PersistedTorrent {
 struct AppStateFile {
     version: u32,
     #[serde(default)]
+    last_run_version: Option<String>,
+    #[serde(default)]
     last_download_directory: Option<PathBuf>,
     #[serde(default)]
     preferences: AppPreferences,
@@ -254,6 +258,7 @@ impl Default for AppStateFile {
     fn default() -> Self {
         Self {
             version: STATE_VERSION,
+            last_run_version: None,
             last_download_directory: None,
             preferences: AppPreferences::default(),
             torrents: HashMap::new(),
@@ -310,6 +315,29 @@ impl ApplicationPersistence {
 
     pub fn last_download_directory(&self) -> Option<PathBuf> {
         self.state.lock().ok()?.last_download_directory.clone()
+    }
+
+    pub fn record_last_run_version(&self, version: &str) -> Result<Option<String>, String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "state lock poisoned".to_string())?;
+        let previous = state
+            .last_run_version
+            .as_ref()
+            .filter(|previous| !previous.is_empty() && previous.as_str() != version)
+            .cloned();
+        state.last_run_version = Some(version.to_string());
+        self.write_locked(&state)?;
+        Ok(previous)
+    }
+
+    pub fn flush(&self) -> Result<(), String> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| "state lock poisoned".to_string())?;
+        self.write_locked(&state)
     }
 
     pub fn clear_last_download_directory(&self) -> Result<(), String> {
@@ -374,6 +402,41 @@ impl ApplicationPersistence {
         state.queue_order = queue_order;
         state.queued_info_hashes = queued_info_hashes;
         self.write_locked(&state)
+    }
+
+    pub fn set_resume_after_update(&self, info_hash: &str, resume: bool) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "state lock poisoned".to_string())?;
+        let Some(record) = state.torrents.get_mut(&info_hash.to_ascii_lowercase()) else {
+            return Err("torrent is not present in the saved library".to_string());
+        };
+        if record.resume_after_update != resume {
+            record.resume_after_update = resume;
+            self.write_locked(&state)?;
+        }
+        Ok(())
+    }
+
+    /// Consume the one-shot resume intent recorded for seeders that were live
+    /// when an update began. Clearing it atomically prevents repeated restarts.
+    pub fn take_update_resume_hashes(&self) -> Result<Vec<String>, String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "state lock poisoned".to_string())?;
+        let mut hashes = Vec::new();
+        for (hash, record) in &mut state.torrents {
+            if record.resume_after_update {
+                hashes.push(hash.clone());
+                record.resume_after_update = false;
+            }
+        }
+        if !hashes.is_empty() {
+            self.write_locked(&state)?;
+        }
+        Ok(hashes)
     }
 
     pub fn torrents(&self) -> Result<Vec<PersistedTorrent>, String> {
@@ -799,6 +862,7 @@ impl ApplicationPersistence {
             total_bytes,
             added_at,
             completed_at,
+            resume_after_update: prior.is_some_and(|record| record.resume_after_update),
             source_type,
             selected_file_indices,
             file_priorities,
@@ -819,6 +883,7 @@ impl ApplicationPersistence {
                 || prior.last_state != record.last_state
                 || prior.last_error != record.last_error
                 || prior.completed_at != record.completed_at
+                || prior.resume_after_update != record.resume_after_update
                 || prior.source_type != record.source_type
                 || prior.selected_file_indices != record.selected_file_indices
                 || prior.file_priorities != record.file_priorities
@@ -1083,6 +1148,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn last_run_version_changes_only_after_a_different_version_is_seen() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let path = temp.path().join("application-state.json");
+        let persistence = ApplicationPersistence::open(&path);
+
+        assert_eq!(persistence.record_last_run_version("0.2.1").unwrap(), None);
+        assert_eq!(persistence.record_last_run_version("0.2.1").unwrap(), None);
+        assert_eq!(
+            persistence
+                .record_last_run_version("0.2.2")
+                .unwrap()
+                .as_deref(),
+            Some("0.2.1")
+        );
+
+        let restored = ApplicationPersistence::open(&path);
+        assert_eq!(restored.record_last_run_version("0.2.2").unwrap(), None);
+    }
+
+    #[test]
     fn corrupt_state_is_preserved_and_defaults_are_loaded() {
         let temp = tempfile::tempdir().expect("temporary directory");
         let path = temp.path().join("application-state.json");
@@ -1227,6 +1312,7 @@ mod tests {
                     total_bytes: 128,
                     added_at: 1,
                     completed_at: None,
+                    resume_after_update: false,
                     source_type: TorrentSourceType::TorrentFile,
                     selected_file_indices: None,
                     file_priorities: Vec::new(),
@@ -1243,9 +1329,22 @@ mod tests {
         persistence
             .set_torrent_bandwidth_limits(info_hash, Some(2 * 1024 * 1024), Some(256 * 1024))
             .expect("save torrent limits");
+        persistence
+            .set_resume_after_update(info_hash, true)
+            .expect("save update resume intent");
         drop(persistence);
 
         let restored = ApplicationPersistence::open(&path);
+        assert_eq!(
+            restored
+                .take_update_resume_hashes()
+                .expect("consume update resume intent"),
+            vec![info_hash.to_string()]
+        );
+        assert!(restored
+            .take_update_resume_hashes()
+            .expect("resume intent is one-shot")
+            .is_empty());
         assert_eq!(
             restored
                 .torrent_bandwidth_limits(info_hash)

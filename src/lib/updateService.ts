@@ -2,7 +2,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { isTauri } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
-import { getAppInfo } from "./desktop";
+import { cancelUpdateInstall, getAppInfo, prepareUpdateInstall } from "./desktop";
 
 export type UpdateErrorCategory =
   | "network"
@@ -26,7 +26,9 @@ export interface UpdateInfo {
   available: boolean;
   checking: boolean;
   downloading: boolean;
+  preparingToInstall: boolean;
   installing: boolean;
+  installStage: "preparing" | "installing" | null;
   downloaded: boolean;
   restartRequired: boolean;
   progress: number | null;
@@ -57,7 +59,9 @@ const initialState: UpdateInfo = {
   available: false,
   checking: false,
   downloading: false,
+  preparingToInstall: false,
   installing: false,
+  installStage: null,
   downloaded: false,
   restartRequired: false,
   progress: null,
@@ -127,6 +131,16 @@ function safeReleaseNotes(value: string | undefined): string | null {
   return value.length > releaseNotesLimit
     ? `${value.slice(0, releaseNotesLimit)}\n\n[Release notes truncated]`
     : value;
+}
+
+function safeFailureDetail(error: unknown): string | null {
+  const detail = error instanceof Error ? error.message : String(error ?? "");
+  const sanitized = detail
+    .replace(/https?:\/\/\S+/gi, "<update URL>")
+    .replace(/(bearer\s+)\S+/gi, "$1[redacted]")
+    .replace(/\s+/g, " ")
+    .trim();
+  return sanitized ? sanitized.slice(0, 280) : null;
 }
 
 class TauriUpdateService implements UpdateService {
@@ -267,17 +281,42 @@ class TauriUpdateService implements UpdateService {
     }
 
     this.busy = true;
-    this.state = { ...this.state, installing: true, error: null, errorCategory: null };
+    this.state = {
+      ...this.state,
+      preparingToInstall: true,
+      installing: false,
+      installStage: "preparing",
+      error: null,
+      errorCategory: null,
+    };
     this.publish(true);
+    let prepared = false;
     try {
+      await prepareUpdateInstall();
+      prepared = true;
+      this.state = {
+        ...this.state,
+        preparingToInstall: false,
+        installing: true,
+        installStage: "installing",
+      };
+      this.publish(true);
       await this.pendingUpdate.install();
       await this.closePendingUpdate();
-      this.state = { ...this.state, available: false, checking: false, downloading: false, installing: false, downloaded: false, restartRequired: true, error: null, errorCategory: null };
+      this.state = { ...this.state, available: false, checking: false, downloading: false, preparingToInstall: false, installing: false, installStage: null, downloaded: false, restartRequired: true, error: null, errorCategory: null };
       console.info("[Torque updater] update installed");
       this.publish(true);
       return this.getSnapshot();
     } catch (error) {
-      return this.fail("install", error);
+      let installError = error;
+      if (prepared) {
+        try {
+          await cancelUpdateInstall();
+        } catch (rollbackError) {
+          installError = new Error(`${error instanceof Error ? error.message : String(error)} Download recovery also failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
+        }
+      }
+      return this.fail("install", installError);
     } finally {
       this.busy = false;
     }
@@ -307,6 +346,11 @@ class TauriUpdateService implements UpdateService {
     try {
       await relaunch();
     } catch (error) {
+      try {
+        await cancelUpdateInstall();
+      } catch {
+        // The backend command always reopens the mutation gate, even if a transfer cannot resume.
+      }
       const failure = this.fail("restart", error);
       throw new Error(failure.error ?? "Torque could not restart.");
     }
@@ -321,12 +365,18 @@ class TauriUpdateService implements UpdateService {
 
   private fail(operation: "check" | "download" | "install" | "restart", error: unknown): UpdateInfo {
     const failure = classifyError(error, operation);
+    const detail = operation === "install" || operation === "restart" ? safeFailureDetail(error) : null;
+    const message = detail && failure.category !== "signature"
+      ? `${failure.message} Details: ${detail}`
+      : failure.message;
     this.state = {
       ...this.state,
       checking: false,
       downloading: false,
+      preparingToInstall: false,
       installing: false,
-      error: failure.message,
+      installStage: null,
+      error: message,
       errorCategory: failure.category,
     };
     // Only log the category; raw errors can contain remote URLs or other request details.

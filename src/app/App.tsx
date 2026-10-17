@@ -20,6 +20,7 @@ import { useUpdateWorkflow } from "./useUpdateWorkflow";
 
 export default function App() {
   const { connection, retry } = useDesktopConnection();
+  const updateNoticeShown = useRef<string | null>(null);
   const isConnected = connection.state === "connected";
   const queue = useTorrentQueue(isConnected);
   const updateWorkflow = useUpdateWorkflow({
@@ -28,6 +29,14 @@ export default function App() {
     onPreferencesChange: queue.updateUpdatePreferences,
     notify: queue.notify,
   });
+
+  useEffect(() => {
+    if (connection.state !== "connected" || !connection.info.updatedFromVersion) return;
+    const version = connection.info.version;
+    if (updateNoticeShown.current === version) return;
+    updateNoticeShown.current = version;
+    queue.notify(`Updated successfully · You’re now running v${version}.`, "success");
+  }, [connection, queue.notify]);
   const { pauseTorrent, resumeTorrent, setError } = queue;
   const [showAddTorrent, setShowAddTorrent] = useState(false);
   const [showSettings, setShowSettings] = useState(false);

@@ -4,7 +4,7 @@ use std::{
     fs,
     num::NonZeroU32,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 use bytes::Bytes;
@@ -93,6 +93,10 @@ pub enum TorrentError {
     LibraryMetadata(String),
     #[error("The application state could not be locked.")]
     ApplicationStateLock,
+    #[error("Torque is preparing to install an update. Try again after the update finishes or is cancelled.")]
+    UpdatePreparing,
+    #[error("Could not prepare the torrent session for updating: {0}")]
+    UpdatePreparation(String),
     #[error("Integrity verification is already running for this torrent.")]
     RecheckAlreadyRunning,
     #[error("Could not prepare the torrent for integrity verification: {0}")]
@@ -318,6 +322,15 @@ struct QueueState {
     waiting: Vec<String>,
 }
 
+#[derive(Default)]
+struct UpdateLifecycle {
+    mutations_blocked: bool,
+    paused_torrent_ids: Vec<usize>,
+    resume_seed_hashes: Vec<String>,
+    updated_from_version: Option<String>,
+    shutdown_started: bool,
+}
+
 pub struct TorrentService {
     api: Api,
     session: Arc<Session>,
@@ -331,6 +344,7 @@ pub struct TorrentService {
     queue: Mutex<QueueState>,
     queue_operations: AsyncMutex<()>,
     bandwidth_operations: AsyncMutex<()>,
+    update_lifecycle: Mutex<UpdateLifecycle>,
 }
 
 impl TorrentService {
@@ -418,6 +432,7 @@ impl TorrentService {
             }),
             queue_operations: AsyncMutex::new(()),
             bandwidth_operations: AsyncMutex::new(()),
+            update_lifecycle: Mutex::new(UpdateLifecycle::default()),
         };
 
         service.apply_rate_limits()?;
@@ -456,6 +471,7 @@ impl TorrentService {
         &self,
         path: PathBuf,
     ) -> Result<DownloadDirectory, TorrentError> {
+        let _lifecycle_guard = self.mutation_guard()?;
         let path = validate_directory(&path)?;
         let directory = DownloadDirectory {
             id: Uuid::new_v4().to_string(),
@@ -489,12 +505,16 @@ impl TorrentService {
         &self,
         preferences: AppPreferences,
     ) -> Result<AppPreferences, TorrentError> {
+        self.ensure_mutations_allowed()?;
         validate_preferences(&preferences)?;
+        let _queue_guard = self.queue_operations.lock().await;
+        self.ensure_mutations_allowed()?;
+        let _bandwidth_guard = self.bandwidth_operations.lock().await;
+        self.ensure_mutations_allowed()?;
         self.persistence
             .set_preferences(preferences)
             .map_err(TorrentError::Persistence)?;
         self.apply_rate_limits()?;
-        let _guard = self.queue_operations.lock().await;
         self.schedule_queue_locked().await?;
         self.preferences()
     }
@@ -503,11 +523,245 @@ impl TorrentService {
         &self,
         preferences: UpdatePreferences,
     ) -> Result<UpdatePreferences, TorrentError> {
+        let _lifecycle_guard = self.mutation_guard()?;
         validate_update_preferences(&preferences)?;
         self.persistence
             .set_update_preferences(preferences)
             .map_err(TorrentError::Persistence)?;
         Ok(self.preferences()?.updates)
+    }
+
+    fn ensure_mutations_allowed(&self) -> Result<(), TorrentError> {
+        drop(self.mutation_guard()?);
+        Ok(())
+    }
+
+    fn mutation_guard(&self) -> Result<MutexGuard<'_, UpdateLifecycle>, TorrentError> {
+        let lifecycle = self
+            .update_lifecycle
+            .lock()
+            .map_err(|_| TorrentError::ApplicationStateLock)?;
+        if lifecycle.mutations_blocked {
+            return Err(TorrentError::UpdatePreparing);
+        }
+        Ok(lifecycle)
+    }
+
+    fn mutations_are_blocked(&self) -> Result<bool, TorrentError> {
+        self.update_lifecycle
+            .lock()
+            .map(|lifecycle| lifecycle.mutations_blocked)
+            .map_err(|_| TorrentError::ApplicationStateLock)
+    }
+
+    pub fn record_current_version(&self, current_version: &str) -> Result<(), TorrentError> {
+        let previous = self
+            .persistence
+            .record_last_run_version(current_version)
+            .map_err(TorrentError::Persistence)?;
+        self.update_lifecycle
+            .lock()
+            .map_err(|_| TorrentError::ApplicationStateLock)?
+            .updated_from_version = previous;
+        Ok(())
+    }
+
+    pub fn updated_from_version(&self) -> Result<Option<String>, TorrentError> {
+        self.update_lifecycle
+            .lock()
+            .map(|lifecycle| lifecycle.updated_from_version.clone())
+            .map_err(|_| TorrentError::ApplicationStateLock)
+    }
+
+    /// Quiesce network transfers while preserving the rqbit session and all
+    /// application-level torrent metadata. On any preparation failure, resume
+    /// the transfers that were active before returning the error.
+    pub async fn prepare_update_install(&self) -> Result<(), TorrentError> {
+        {
+            let mut lifecycle = self
+                .update_lifecycle
+                .lock()
+                .map_err(|_| TorrentError::ApplicationStateLock)?;
+            if lifecycle.mutations_blocked {
+                return Err(TorrentError::UpdatePreparing);
+            }
+            lifecycle.mutations_blocked = true;
+            lifecycle.paused_torrent_ids.clear();
+            lifecycle.resume_seed_hashes.clear();
+        }
+
+        let mut paused_ids = Vec::new();
+        let mut resume_seed_hashes = Vec::new();
+        let prepare_result = async {
+            let _queue_guard = self.queue_operations.lock().await;
+            let _bandwidth_guard = self.bandwidth_operations.lock().await;
+
+            let torrents = self.get_torrents()?;
+            {
+                let queue = self.queue.lock().map_err(|_| TorrentError::QueueLock)?;
+                self.persist_queue_locked(&queue)?;
+            }
+            self.persistence
+                .flush()
+                .map_err(TorrentError::Persistence)?;
+
+            resume_seed_hashes = torrents
+                .iter()
+                .filter(|torrent| torrent.is_seeding)
+                .map(|torrent| torrent.info_hash.to_ascii_lowercase())
+                .collect();
+            for info_hash in &resume_seed_hashes {
+                self.persistence
+                    .set_resume_after_update(info_hash, true)
+                    .map_err(TorrentError::Persistence)?;
+            }
+
+            for torrent in torrents
+                .iter()
+                .filter(|torrent| torrent.state == TorrentState::Downloading || torrent.is_seeding)
+            {
+                self.api
+                    .api_torrent_action_pause(TorrentIdOrHash::Id(torrent.id))
+                    .await
+                    .map_err(|error| TorrentError::UpdatePreparation(error.to_string()))?;
+                paused_ids.push(torrent.id);
+            }
+
+            // rqbit persists paused state and fast-resume bitfields as each
+            // torrent is paused. Refresh Torque's atomic snapshot afterward.
+            self.get_torrents()?;
+            self.persistence
+                .flush()
+                .map_err(TorrentError::Persistence)?;
+            Ok::<(), TorrentError>(())
+        }
+        .await;
+
+        if let Err(error) = prepare_result {
+            let mut rollback_errors = self.resume_after_update_failure(&paused_ids).await;
+            rollback_errors.extend(self.clear_update_resume_markers(&resume_seed_hashes));
+            if let Ok(mut lifecycle) = self.update_lifecycle.lock() {
+                lifecycle.mutations_blocked = false;
+                lifecycle.paused_torrent_ids.clear();
+                lifecycle.resume_seed_hashes.clear();
+            }
+            let suffix = if rollback_errors.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " Transfers that could not resume: {}.",
+                    rollback_errors.join("; ")
+                )
+            };
+            return Err(TorrentError::UpdatePreparation(format!("{error}{suffix}")));
+        }
+
+        let mut lifecycle = self
+            .update_lifecycle
+            .lock()
+            .map_err(|_| TorrentError::ApplicationStateLock)?;
+        lifecycle.paused_torrent_ids = paused_ids;
+        lifecycle.resume_seed_hashes = resume_seed_hashes;
+        Ok(())
+    }
+
+    /// Undo the temporary pause if updater installation fails. The gate is
+    /// always lifted, even if one torrent cannot be resumed.
+    pub async fn cancel_update_install(&self) -> Result<(), TorrentError> {
+        let (paused_ids, resume_seed_hashes) = {
+            let lifecycle = self
+                .update_lifecycle
+                .lock()
+                .map_err(|_| TorrentError::ApplicationStateLock)?;
+            if !lifecycle.mutations_blocked {
+                return Ok(());
+            }
+            (
+                lifecycle.paused_torrent_ids.clone(),
+                lifecycle.resume_seed_hashes.clone(),
+            )
+        };
+
+        let mut errors = self.resume_after_update_failure(&paused_ids).await;
+        errors.extend(self.clear_update_resume_markers(&resume_seed_hashes));
+        if let Err(error) = self.get_torrents() {
+            errors.push(error.to_string());
+        }
+        if let Err(error) = self.persistence.flush() {
+            errors.push(error);
+        }
+
+        let mut lifecycle = self
+            .update_lifecycle
+            .lock()
+            .map_err(|_| TorrentError::ApplicationStateLock)?;
+        lifecycle.mutations_blocked = false;
+        lifecycle.paused_torrent_ids.clear();
+        lifecycle.resume_seed_hashes.clear();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(TorrentError::UpdatePreparation(errors.join("; ")))
+        }
+    }
+
+    async fn resume_after_update_failure(&self, torrent_ids: &[usize]) -> Vec<String> {
+        let mut errors = Vec::new();
+        for id in torrent_ids {
+            if let Err(error) = self
+                .api
+                .api_torrent_action_start(TorrentIdOrHash::Id(*id))
+                .await
+            {
+                if !error
+                    .to_string()
+                    .to_ascii_lowercase()
+                    .contains("already live")
+                {
+                    errors.push(format!("torrent {id}: {error}"));
+                }
+            }
+        }
+        errors
+    }
+
+    fn clear_update_resume_markers(&self, info_hashes: &[String]) -> Vec<String> {
+        let mut errors = Vec::new();
+        for info_hash in info_hashes {
+            if let Err(error) = self.persistence.set_resume_after_update(info_hash, false) {
+                errors.push(format!("torrent {info_hash}: {error}"));
+            }
+        }
+        errors
+    }
+
+    /// Called only on process exit. rqbit's stop persists paused session state
+    /// and then cancels its network tasks; it does not delete session entries
+    /// or touch downloaded files.
+    pub async fn graceful_shutdown(&self) -> Result<(), TorrentError> {
+        {
+            let mut lifecycle = self
+                .update_lifecycle
+                .lock()
+                .map_err(|_| TorrentError::ApplicationStateLock)?;
+            if lifecycle.shutdown_started {
+                return Ok(());
+            }
+            lifecycle.shutdown_started = true;
+            lifecycle.mutations_blocked = true;
+        }
+
+        let snapshot_result = async {
+            let _queue_guard = self.queue_operations.lock().await;
+            let _bandwidth_guard = self.bandwidth_operations.lock().await;
+            self.get_torrents()?;
+            let queue = self.queue.lock().map_err(|_| TorrentError::QueueLock)?;
+            self.persist_queue_locked(&queue)?;
+            self.persistence.flush().map_err(TorrentError::Persistence)
+        }
+        .await;
+        self.session.stop().await;
+        snapshot_result
     }
 
     fn apply_rate_limits(&self) -> Result<(), TorrentError> {
@@ -582,6 +836,9 @@ impl TorrentService {
     }
 
     async fn schedule_queue_locked(&self) -> Result<(), TorrentError> {
+        if self.mutations_are_blocked()? {
+            return Ok(());
+        }
         let preferences = self.preferences()?;
         let mut torrents = self.get_torrents()?;
         let waiting_before: HashSet<String> = self
@@ -694,7 +951,9 @@ impl TorrentService {
 
     pub async fn refresh_torrents(&self) -> Result<Vec<TorrentStatus>, TorrentError> {
         let _guard = self.queue_operations.lock().await;
-        self.finalize_completed_rechecks_locked().await?;
+        if !self.mutations_are_blocked()? {
+            self.finalize_completed_rechecks_locked().await?;
+        }
         self.schedule_queue_locked().await?;
         self.get_torrents()
     }
@@ -704,7 +963,9 @@ impl TorrentService {
         id: usize,
         movement: QueueMove,
     ) -> Result<TorrentStatus, TorrentError> {
+        self.ensure_mutations_allowed()?;
         let _guard = self.queue_operations.lock().await;
+        self.ensure_mutations_allowed()?;
         let current = self.get_torrent_status(id)?;
         let hash = current.info_hash.to_ascii_lowercase();
         let mut queue = self.queue.lock().map_err(|_| TorrentError::QueueLock)?;
@@ -788,11 +1049,13 @@ impl TorrentService {
         direction: TorrentBandwidthDirection,
         limit_bytes_per_second: Option<u64>,
     ) -> Result<TorrentStatus, TorrentError> {
+        self.ensure_mutations_allowed()?;
         if limit_bytes_per_second.is_some_and(|limit| limit == 0 || limit > u32::MAX as u64) {
             return Err(TorrentError::InvalidBandwidthLimit);
         }
 
         let _guard = self.bandwidth_operations.lock().await;
+        self.ensure_mutations_allowed()?;
         let current = self
             .get_torrents()?
             .into_iter()
@@ -844,6 +1107,7 @@ impl TorrentService {
     }
 
     pub fn create_torrent_category(&self, name: &str) -> Result<TorrentCategory, TorrentError> {
+        let _lifecycle_guard = self.mutation_guard()?;
         self.persistence
             .create_category(name)
             .map_err(TorrentError::LibraryMetadata)
@@ -854,30 +1118,35 @@ impl TorrentService {
         category_id: &str,
         name: &str,
     ) -> Result<TorrentCategory, TorrentError> {
+        let _lifecycle_guard = self.mutation_guard()?;
         self.persistence
             .rename_category(category_id, name)
             .map_err(TorrentError::LibraryMetadata)
     }
 
     pub fn delete_torrent_category(&self, category_id: &str) -> Result<(), TorrentError> {
+        let _lifecycle_guard = self.mutation_guard()?;
         self.persistence
             .delete_category(category_id)
             .map_err(TorrentError::LibraryMetadata)
     }
 
     pub fn create_torrent_tag(&self, name: &str) -> Result<TorrentTag, TorrentError> {
+        let _lifecycle_guard = self.mutation_guard()?;
         self.persistence
             .create_tag(name)
             .map_err(TorrentError::LibraryMetadata)
     }
 
     pub fn rename_torrent_tag(&self, tag_id: &str, name: &str) -> Result<TorrentTag, TorrentError> {
+        let _lifecycle_guard = self.mutation_guard()?;
         self.persistence
             .rename_tag(tag_id, name)
             .map_err(TorrentError::LibraryMetadata)
     }
 
     pub fn delete_torrent_tag(&self, tag_id: &str) -> Result<(), TorrentError> {
+        let _lifecycle_guard = self.mutation_guard()?;
         self.persistence
             .delete_tag(tag_id)
             .map_err(TorrentError::LibraryMetadata)
@@ -889,6 +1158,7 @@ impl TorrentService {
         category_edit: &TorrentCategoryEdit,
         tag_edit: &TorrentTagEdit,
     ) -> Result<(), TorrentError> {
+        let _lifecycle_guard = self.mutation_guard()?;
         if torrent_ids.is_empty() {
             return Err(TorrentError::Status(
                 "Select at least one torrent to edit.".to_string(),
@@ -917,6 +1187,7 @@ impl TorrentService {
         &self,
         torrent_path: PathBuf,
     ) -> Result<TorrentFileSelection, TorrentError> {
+        let _lifecycle_guard = self.mutation_guard()?;
         let torrent_path = fs::canonicalize(&torrent_path)
             .map_err(|error| TorrentError::ReadTorrentFile(error.to_string()))?;
         read_torrent_file(&torrent_path)?;
@@ -936,6 +1207,7 @@ impl TorrentService {
     }
 
     pub fn discard_torrent_file_selection(&self, selection_id: &str) -> Result<(), TorrentError> {
+        let _lifecycle_guard = self.mutation_guard()?;
         self.torrent_file_selections
             .lock()
             .map_err(|_| TorrentError::TorrentFileSelectionLock)?
@@ -948,6 +1220,7 @@ impl TorrentService {
         magnet_link: &str,
         directory_id: &str,
     ) -> Result<TorrentPreview, TorrentError> {
+        self.ensure_mutations_allowed()?;
         let magnet_link = validate_magnet(magnet_link)?.to_owned();
         let output_directory = self.validate_output_directory(directory_id)?;
         self.inspect_source(
@@ -963,6 +1236,7 @@ impl TorrentService {
         torrent_url: &str,
         directory_id: &str,
     ) -> Result<TorrentPreview, TorrentError> {
+        self.ensure_mutations_allowed()?;
         let torrent_url = validate_torrent_url(torrent_url)?.to_string();
         let output_directory = self.validate_output_directory(directory_id)?;
         self.inspect_source(
@@ -978,6 +1252,7 @@ impl TorrentService {
         selection_id: &str,
         directory_id: &str,
     ) -> Result<TorrentPreview, TorrentError> {
+        self.ensure_mutations_allowed()?;
         let output_directory = self.validate_output_directory(directory_id)?;
         let torrent_path = self
             .torrent_file_selections
@@ -1113,6 +1388,7 @@ impl TorrentService {
     }
 
     pub fn discard_torrent_preview(&self, preview_id: &str) -> Result<(), TorrentError> {
+        let _lifecycle_guard = self.mutation_guard()?;
         self.torrent_previews
             .lock()
             .map_err(|_| TorrentError::PreviewLock)?
@@ -1127,7 +1403,9 @@ impl TorrentService {
         selected_file_indices: &[usize],
         allow_insufficient_space: bool,
     ) -> Result<TorrentStatus, TorrentError> {
+        self.ensure_mutations_allowed()?;
         let _guard = self.queue_operations.lock().await;
+        self.ensure_mutations_allowed()?;
         let output_directory = self.validate_output_directory(directory_id)?;
         let prepared = self
             .torrent_previews
@@ -1266,7 +1544,9 @@ impl TorrentService {
     }
 
     pub async fn pause_torrent(&self, id: usize) -> Result<TorrentStatus, TorrentError> {
+        self.ensure_mutations_allowed()?;
         let _guard = self.queue_operations.lock().await;
+        self.ensure_mutations_allowed()?;
         let hash = self.get_torrent_status(id)?.info_hash.to_ascii_lowercase();
         self.api
             .api_torrent_action_pause(TorrentIdOrHash::Id(id))
@@ -1284,7 +1564,9 @@ impl TorrentService {
     }
 
     pub async fn force_recheck(&self, id: usize) -> Result<TorrentStatus, TorrentError> {
+        self.ensure_mutations_allowed()?;
         let _guard = self.queue_operations.lock().await;
+        self.ensure_mutations_allowed()?;
         let status = self.get_torrent_status(id)?;
         if status.state == TorrentState::Checking
             || self
@@ -1371,7 +1653,9 @@ impl TorrentService {
     }
 
     pub async fn cancel_torrent_recheck(&self, id: usize) -> Result<TorrentStatus, TorrentError> {
+        self.ensure_mutations_allowed()?;
         let _guard = self.queue_operations.lock().await;
+        self.ensure_mutations_allowed()?;
         let status = self.get_torrent_status(id)?;
         let is_rechecking = self
             .persistence
@@ -1482,7 +1766,9 @@ impl TorrentService {
     }
 
     async fn start_or_queue_torrent(&self, id: usize) -> Result<TorrentStatus, TorrentError> {
+        self.ensure_mutations_allowed()?;
         let _guard = self.queue_operations.lock().await;
+        self.ensure_mutations_allowed()?;
         let current = self.get_torrents()?;
         let target = current
             .iter()
@@ -1538,7 +1824,9 @@ impl TorrentService {
         id: usize,
         selected_file_indices: &[usize],
     ) -> Result<TorrentStatus, TorrentError> {
+        self.ensure_mutations_allowed()?;
         let _guard = self.queue_operations.lock().await;
+        self.ensure_mutations_allowed()?;
         let status = self.get_torrent_status(id)?;
         if selected_file_indices.is_empty() {
             return Err(TorrentError::NoFilesSelected);
@@ -1573,7 +1861,9 @@ impl TorrentService {
         id: usize,
         updates: &[TorrentFilePriorityUpdate],
     ) -> Result<TorrentStatus, TorrentError> {
+        self.ensure_mutations_allowed()?;
         let _guard = self.queue_operations.lock().await;
+        self.ensure_mutations_allowed()?;
         let status = self.get_torrent_status(id)?;
         let mut priorities: Vec<_> = status.files.iter().map(|file| file.priority).collect();
         if priorities.is_empty() || updates.is_empty() {
@@ -1662,7 +1952,9 @@ impl TorrentService {
 
     /// Remove the session entry without deleting the downloaded data.
     pub async fn remove_torrent(&self, id: usize, delete_files: bool) -> Result<(), TorrentError> {
+        self.ensure_mutations_allowed()?;
         let _guard = self.queue_operations.lock().await;
+        self.ensure_mutations_allowed()?;
         if let Some(info_hash) = self
             .missing_torrent_ids
             .lock()
@@ -2099,6 +2391,16 @@ impl TorrentService {
                 return;
             }
         };
+        let resume_seed_hashes = match self.persistence.take_update_resume_hashes() {
+            Ok(hashes) => hashes
+                .into_iter()
+                .map(|hash| hash.to_ascii_lowercase())
+                .collect::<HashSet<_>>(),
+            Err(error) => {
+                eprintln!("Could not restore seeding activity after update: {error}");
+                HashSet::new()
+            }
+        };
         let order = match self.queue.lock() {
             Ok(queue) => queue.order.clone(),
             Err(_) => return,
@@ -2111,6 +2413,37 @@ impl TorrentService {
         });
         if let Ok(mut queue) = self.queue.lock() {
             queue.waiting.clear();
+        }
+
+        if preferences.resume_unfinished_on_startup {
+            for torrent in torrents.iter().filter(|torrent| {
+                torrent.engine_available
+                    && torrent.state == TorrentState::Completed
+                    && resume_seed_hashes.contains(&torrent.info_hash.to_ascii_lowercase())
+            }) {
+                if let Err(error) = self
+                    .api
+                    .api_torrent_action_start(TorrentIdOrHash::Id(torrent.id))
+                    .await
+                {
+                    if !error
+                        .to_string()
+                        .to_ascii_lowercase()
+                        .contains("already live")
+                    {
+                        eprintln!("Could not resume seeding torrent {}: {error}", torrent.id);
+                        if let Err(persistence_error) = self
+                            .persistence
+                            .set_resume_after_update(&torrent.info_hash, true)
+                        {
+                            eprintln!(
+                                "Could not retain seeding recovery for torrent {}: {persistence_error}",
+                                torrent.id
+                            );
+                        }
+                    }
+                }
+            }
         }
 
         let mut active = 0usize;
@@ -2882,6 +3215,202 @@ mod tests {
             2
         );
         service.api.session().stop().await;
+    }
+
+    #[tokio::test]
+    async fn update_prepare_pauses_only_active_torrents_and_cancel_restores_them() {
+        let temp = tempfile::tempdir().expect("temporary test directory");
+        let output = temp.path().join("downloads");
+        fs::create_dir_all(&output).expect("create downloads");
+        let session = Session::new_with_opts(
+            output.clone(),
+            SessionOptions {
+                dht: None,
+                listen: None,
+                persistence: None,
+                ..SessionOptions::default()
+            },
+        )
+        .await
+        .expect("create test session");
+        let service = TorrentService::with_session(session, output.clone()).expect("service");
+
+        let active = service
+            .api
+            .api_add_torrent(
+                AddTorrent::from_bytes(ONE_BYTE_TORRENT.to_vec()),
+                Some(AddTorrentOptions {
+                    output_folder: Some(output.to_string_lossy().into_owned()),
+                    paused: true,
+                    ..AddTorrentOptions::default()
+                }),
+            )
+            .await
+            .expect("add active torrent")
+            .id
+            .expect("active torrent id");
+        service
+            .api
+            .api_torrent_action_start(TorrentIdOrHash::Id(active))
+            .await
+            .expect("start active torrent");
+        let paused = service
+            .api
+            .api_add_torrent(
+                AddTorrent::from_bytes(COMPLETE_TORRENT.to_vec()),
+                Some(AddTorrentOptions {
+                    output_folder: Some(output.to_string_lossy().into_owned()),
+                    paused: true,
+                    ..AddTorrentOptions::default()
+                }),
+            )
+            .await
+            .expect("add paused torrent")
+            .id
+            .expect("paused torrent id");
+
+        let mut active_state = service
+            .get_torrent_status(active)
+            .expect("active status")
+            .state;
+        for _ in 0..50 {
+            if active_state == TorrentState::Downloading {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            active_state = service
+                .get_torrent_status(active)
+                .expect("refresh active status")
+                .state;
+        }
+        assert_eq!(active_state, TorrentState::Downloading);
+        assert_eq!(
+            service
+                .get_torrent_status(paused)
+                .expect("paused status")
+                .state,
+            TorrentState::Paused
+        );
+
+        service
+            .prepare_update_install()
+            .await
+            .expect("prepare update");
+        assert_eq!(
+            service
+                .get_torrent_status(active)
+                .expect("prepared active status")
+                .state,
+            TorrentState::Paused
+        );
+        assert_eq!(
+            service
+                .get_torrent_status(paused)
+                .expect("prepared paused status")
+                .state,
+            TorrentState::Paused
+        );
+        assert!(matches!(
+            service.pause_torrent(active).await,
+            Err(TorrentError::UpdatePreparing)
+        ));
+
+        service
+            .cancel_update_install()
+            .await
+            .expect("restore after cancelled update");
+        assert_eq!(
+            service
+                .get_torrent_status(active)
+                .expect("restored active status")
+                .state,
+            TorrentState::Downloading
+        );
+        assert_eq!(
+            service
+                .get_torrent_status(paused)
+                .expect("restored paused status")
+                .state,
+            TorrentState::Paused
+        );
+        service
+            .graceful_shutdown()
+            .await
+            .expect("graceful shutdown");
+    }
+
+    #[tokio::test]
+    async fn update_restart_resumes_previously_active_seeders_when_enabled() {
+        let temp = tempfile::tempdir().expect("temporary test directory");
+        let output = temp.path().join("downloads");
+        fs::create_dir_all(&output).expect("create downloads");
+        fs::write(output.join("world"), b"world").expect("write complete torrent payload");
+        let session = Session::new_with_opts(
+            output.clone(),
+            SessionOptions {
+                dht: None,
+                listen: None,
+                persistence: None,
+                ..SessionOptions::default()
+            },
+        )
+        .await
+        .expect("create test session");
+        let service = TorrentService::with_session(session, output.clone()).expect("service");
+        let id = service
+            .api
+            .api_add_torrent(
+                AddTorrent::from_bytes(COMPLETE_TORRENT.to_vec()),
+                Some(AddTorrentOptions {
+                    output_folder: Some(output.to_string_lossy().into_owned()),
+                    ..AddTorrentOptions::default()
+                }),
+            )
+            .await
+            .expect("add complete torrent")
+            .id
+            .expect("torrent id");
+
+        let mut seeding = service
+            .get_torrent_status(id)
+            .expect("initial torrent status");
+        for _ in 0..50 {
+            if seeding.is_seeding {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            seeding = service
+                .get_torrent_status(id)
+                .expect("refresh seeding status");
+        }
+        assert!(seeding.is_seeding, "complete torrent should be seeding");
+
+        service
+            .prepare_update_install()
+            .await
+            .expect("prepare update");
+        assert!(
+            !service
+                .get_torrent_status(id)
+                .expect("paused seeder status")
+                .is_seeding
+        );
+
+        service.apply_startup_resume_preference().await;
+        assert!(
+            service
+                .get_torrent_status(id)
+                .expect("restored seeder status")
+                .is_seeding
+        );
+        service
+            .cancel_update_install()
+            .await
+            .expect("clear update preparation state");
+        service
+            .graceful_shutdown()
+            .await
+            .expect("graceful shutdown");
     }
 
     #[tokio::test]
