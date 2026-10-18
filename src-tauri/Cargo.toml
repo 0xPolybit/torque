@@ -1,6 +1,6 @@
 [package]
 name = "torque"
-version = "0.2.1"
+version = "0.3.0"
 description = "A cross-platform desktop torrent downloader built with Tauri 2"
 authors = ["Torque contributors"]
 edition = "2021"
