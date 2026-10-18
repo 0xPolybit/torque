@@ -616,10 +616,14 @@ impl TorrentService {
                     .map_err(TorrentError::Persistence)?;
             }
 
-            for torrent in torrents
-                .iter()
-                .filter(|torrent| torrent.state == TorrentState::Downloading || torrent.is_seeding)
-            {
+            for torrent in torrents.iter().filter(|torrent| {
+                torrent.state == TorrentState::Downloading
+                        || torrent.is_seeding
+                        // An initializing, unqueued torrent may transition to
+                        // live after the updater has started. Pause it too.
+                        || (torrent.state == TorrentState::Queued
+                            && torrent.queue_position.is_none())
+            }) {
                 self.api
                     .api_torrent_action_pause(TorrentIdOrHash::Id(torrent.id))
                     .await
@@ -1864,6 +1868,7 @@ impl TorrentService {
         self.ensure_mutations_allowed()?;
         let _guard = self.queue_operations.lock().await;
         self.ensure_mutations_allowed()?;
+        self.wait_for_resolved_torrent_initialization(id).await?;
         let status = self.get_torrent_status(id)?;
         let mut priorities: Vec<_> = status.files.iter().map(|file| file.priority).collect();
         if priorities.is_empty() || updates.is_empty() {
@@ -1948,6 +1953,26 @@ impl TorrentService {
             return Err(TorrentError::Persistence(error));
         }
         self.get_torrent_status(id)
+    }
+
+    /// Wait for a resolved torrent's initial disk scan before operations that
+    /// mutate its file selection. Unresolved magnets must remain startable so
+    /// the engine can discover their metadata from peers.
+    async fn wait_for_resolved_torrent_initialization(
+        &self,
+        id: usize,
+    ) -> Result<(), TorrentError> {
+        let handle = self
+            .session
+            .get(TorrentIdOrHash::Id(id))
+            .ok_or_else(|| TorrentError::Status("torrent is no longer available".into()))?;
+        if handle.with_metadata(|_| ()).is_ok() {
+            handle
+                .wait_until_initialized()
+                .await
+                .map_err(|error| TorrentError::Engine(error.to_string()))?;
+        }
+        Ok(())
     }
 
     /// Remove the session entry without deleting the downloaded data.
@@ -2422,6 +2447,16 @@ impl TorrentService {
                     && resume_seed_hashes.contains(&torrent.info_hash.to_ascii_lowercase())
             }) {
                 if let Err(error) = self
+                    .wait_for_resolved_torrent_initialization(torrent.id)
+                    .await
+                {
+                    eprintln!(
+                        "Could not initialize restored seeder {}: {error}",
+                        torrent.id
+                    );
+                    continue;
+                }
+                if let Err(error) = self
                     .api
                     .api_torrent_action_start(TorrentIdOrHash::Id(torrent.id))
                     .await
@@ -2460,6 +2495,67 @@ impl TorrentService {
                         continue;
                     }
                     TorrentState::Paused | TorrentState::Queued => {
+                        if let Err(error) = self
+                            .wait_for_resolved_torrent_initialization(torrent.id)
+                            .await
+                        {
+                            eprintln!(
+                                "Could not initialize restored torrent {}: {error}",
+                                torrent.id
+                            );
+                            continue;
+                        }
+                        let current = match self.get_torrent_status(torrent.id) {
+                            Ok(status) => status,
+                            Err(error) => {
+                                eprintln!(
+                                    "Could not refresh restored torrent {}: {error}",
+                                    torrent.id
+                                );
+                                continue;
+                            }
+                        };
+                        if current.state == TorrentState::Completed {
+                            let info_hash = current.info_hash.to_ascii_lowercase();
+                            if resume_seed_hashes.contains(&info_hash) && !current.is_seeding {
+                                if let Err(error) = self
+                                    .api
+                                    .api_torrent_action_start(TorrentIdOrHash::Id(torrent.id))
+                                    .await
+                                {
+                                    if !error
+                                        .to_string()
+                                        .to_ascii_lowercase()
+                                        .contains("already live")
+                                    {
+                                        eprintln!(
+                                            "Could not resume seeding torrent {}: {error}",
+                                            torrent.id
+                                        );
+                                        if let Err(persistence_error) = self
+                                            .persistence
+                                            .set_resume_after_update(&info_hash, true)
+                                        {
+                                            eprintln!(
+                                                "Could not retain seeding recovery for torrent {}: {persistence_error}",
+                                                torrent.id
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                        match current.state {
+                            TorrentState::Downloading => {
+                                active += 1;
+                                continue;
+                            }
+                            TorrentState::Paused | TorrentState::Queued => {}
+                            TorrentState::Checking
+                            | TorrentState::Completed
+                            | TorrentState::Error => continue,
+                        }
                         self.api
                             .api_torrent_action_start(TorrentIdOrHash::Id(torrent.id))
                             .await
@@ -3250,6 +3346,13 @@ mod tests {
             .id
             .expect("active torrent id");
         service
+            .session
+            .get(TorrentIdOrHash::Id(active))
+            .expect("active torrent handle")
+            .wait_until_initialized()
+            .await
+            .expect("initialize active torrent before starting it");
+        service
             .api
             .api_torrent_action_start(TorrentIdOrHash::Id(active))
             .await
@@ -3363,6 +3466,7 @@ mod tests {
                 AddTorrent::from_bytes(COMPLETE_TORRENT.to_vec()),
                 Some(AddTorrentOptions {
                     output_folder: Some(output.to_string_lossy().into_owned()),
+                    overwrite: true,
                     ..AddTorrentOptions::default()
                 }),
             )
